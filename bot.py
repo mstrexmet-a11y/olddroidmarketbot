@@ -17,31 +17,27 @@ ADMIN_IDS = [8285884336, 6011748459]
 
 # Яндекс.Диск
 YANDEX_TOKEN = "y0__wgBEMrpquAFGLqxRiDavp28GDDzmNDsB4oiEFsiUYNKpYYSXyARIj2hc73I"
-YANDEX_FOLDER = "OldDroidMarket"  # Папка на Яндекс.Диске, создастся автоматически
+YANDEX_FOLDER = "OldDroidMarket"
 
 WAITING_FOR_APP_NAME, WAITING_FOR_ANDROID_VERSION, WAITING_FOR_APP_FILE = range(3)
 
 SAVE_DIR = "suggested_apps"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 МБ
+MAX_FILE_SIZE = 20 * 1024 * 1024
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- Яндекс.Диск: загрузка файла ---
 
 def upload_to_yandex_disk(local_path, filename):
-    """Загружает файл на Яндекс.Диск и возвращает ссылку."""
     try:
-        # 1. Создаём папку, если её нет
         headers = {"Authorization": f"OAuth {YANDEX_TOKEN}"}
         params = {"path": f"/{YANDEX_FOLDER}"}
         requests.put("https://cloud-api.yandex.net/v1/disk/resources", headers=headers, params=params)
 
-        # 2. Получаем ссылку для загрузки
         upload_path = f"/{YANDEX_FOLDER}/{filename}"
         params = {"path": upload_path, "overwrite": "true"}
         resp = requests.get("https://cloud-api.yandex.net/v1/disk/resources/upload", headers=headers, params=params)
@@ -51,19 +47,17 @@ def upload_to_yandex_disk(local_path, filename):
             logger.error(f"Не удалось получить ссылку: {resp.json()}")
             return None
 
-        # 3. Загружаем файл
         with open(local_path, "rb") as f:
             upload_resp = requests.put(upload_url, files={"file": f})
 
         if upload_resp.status_code == 201:
-            # 4. Получаем публичную ссылку
             params = {"path": upload_path}
             requests.put("https://cloud-api.yandex.net/v1/disk/resources/publish", headers=headers, params=params)
-            
+
             info_resp = requests.get("https://cloud-api.yandex.net/v1/disk/resources", headers=headers, params={"path": upload_path})
             public_url = info_resp.json().get("public_url")
-            
-            logger.info(f"✅ Загружено на Яндекс.Диск: {public_url}")
+
+            logger.info(f"Загружено на Яндекс.Диск: {public_url}")
             return public_url
         else:
             logger.error(f"Ошибка загрузки: {upload_resp.status_code}")
@@ -74,20 +68,18 @@ def upload_to_yandex_disk(local_path, filename):
         return None
 
 
-# --- Обработчики бота ---
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🕹️ Добро пожаловать в OldDroidMarketBot!\n\n"
+        "Добро пожаловать в OldDroidMarketBot!\n\n"
         "Используй /suggest, чтобы предложить свой APK.\n"
-        "📦 Файлы до 20 МБ — напрямую.\n"
-        "📎 Большие файлы — присылай ссылкой на Google/Яндекс Диск."
+        "Файлы до 20 МБ — напрямую.\n"
+        "Большие файлы — присылай ссылкой на Яндекс Диск."
     )
 
 async def suggest_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📝 Давай оформим заявку.\n\n"
-        "Введи **название приложения**:\n"
+        "Давай оформим заявку.\n\n"
+        "Введи название приложения:\n"
         "Или /cancel для отмены."
     )
     return WAITING_FOR_APP_NAME
@@ -95,20 +87,18 @@ async def suggest_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def receive_app_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["suggested_name"] = update.message.text
     await update.message.reply_text(
-        f"✅ Название: *{update.message.text}*\n\n"
-        f"Теперь укажи **минимальную версию Android** (например: 4.4.4):\n"
-        "Или /cancel для отмены.",
-        parse_mode="Markdown"
+        f"Название: {update.message.text}\n\n"
+        f"Теперь укажи минимальную версию Android (например: 4.4.4):\n"
+        "Или /cancel для отмены."
     )
     return WAITING_FOR_ANDROID_VERSION
 
 async def receive_android_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["android_version"] = update.message.text
     await update.message.reply_text(
-        f"✅ Мин. Android: *{update.message.text}*\n\n"
-        f"Теперь отправь APK-файл (до 20 МБ) или ссылку на Диск.\n"
-        "Или /cancel для отмены.",
-        parse_mode="Markdown"
+        f"Мин. Android: {update.message.text}\n\n"
+        f"Теперь отправь APK-файл (до 20 МБ) или ссылку на Яндекс.Диск.\n"
+        "Или /cancel для отмены."
     )
     return WAITING_FOR_APP_FILE
 
@@ -124,16 +114,15 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_name = file.file_name or ""
 
         if not file_name.lower().endswith(".apk"):
-            await update.message.reply_text("❌ Только .apk файлы! Попробуй ещё раз или /cancel.")
+            await update.message.reply_text("Только .apk файлы! Попробуй ещё раз или /cancel.")
             return WAITING_FOR_APP_FILE
 
         if file.file_size and file.file_size > MAX_FILE_SIZE:
             size_mb = round(file.file_size / (1024 * 1024), 1)
             await update.message.reply_text(
-                f"❌ Файл {size_mb} МБ — больше 20 МБ.\n"
-                f"📎 Загрузи на Яндекс.Диск и пришли ссылку.\n"
-                f"Или /cancel.",
-                parse_mode="Markdown"
+                f"Файл {size_mb} МБ — больше 20 МБ.\n"
+                f"Загрузи на Яндекс.Диск и пришли ссылку.\n"
+                f"Или /cancel."
             )
             return WAITING_FOR_APP_FILE
 
@@ -142,11 +131,10 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             safe_filename = f"{user_id}_{app_name.replace(' ', '_')}.apk"
             local_path = os.path.join(SAVE_DIR, safe_filename)
 
-            loading_msg = await update.message.reply_text("⏳ Сохраняю файл...")
+            loading_msg = await update.message.reply_text("Сохраняю файл...")
             await new_file.download_to_drive(local_path)
 
-            # Загружаем на Яндекс.Диск
-            await loading_msg.edit_text("☁️ Загружаю на Яндекс.Диск...")
+            await loading_msg.edit_text("Загружаю на Яндекс.Диск...")
             yadisk_url = upload_to_yandex_disk(local_path, safe_filename)
 
             await loading_msg.delete()
@@ -155,67 +143,65 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if yadisk_url:
                 await update.message.reply_text(
-                    f"🎉 Заявка принята!\n\n"
-                    f"📱 *{app_name}*\n"
-                    f"📱 Android: *{android_version}*\n"
-                    f"📦 Размер: *{size_mb} МБ*\n"
-                    f"☁️ [Ссылка на Яндекс.Диск]({yadisk_url})\n\n"
+                    f"Заявка принята!\n\n"
+                    f"{app_name}\n"
+                    f"Android: {android_version}\n"
+                    f"Размер: {size_mb} МБ\n"
+                    f"Ссылка на Яндекс.Диск: {yadisk_url}\n\n"
                     f"Модераторы проверят её в ближайшее время.",
-                    parse_mode="Markdown",
                     disable_web_page_preview=True
                 )
             else:
                 await update.message.reply_text(
-                    f"✅ Файл сохранён локально (загрузка на Диск не удалась).\n"
-                    f"📱 *{app_name}* | Android: *{android_version}* | {size_mb} МБ",
-                    parse_mode="Markdown"
+                    f"Файл сохранён локально.\n"
+                    f"{app_name} | Android: {android_version} | {size_mb} МБ"
                 )
 
             await notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, local_path, yadisk_url)
 
         except Exception as e:
             logger.error(f"Ошибка: {e}")
-            await update.message.reply_text(f"❌ Ошибка: {e}")
+            await update.message.reply_text(f"Ошибка: {e}")
 
     elif update.message.text:
         link = update.message.text.strip()
         if not (link.startswith("http://") or link.startswith("https://")):
-            await update.message.reply_text("❌ Это не ссылка. Отправь файл или ссылку. /cancel для отмены.")
+            await update.message.reply_text("Это не ссылка. Отправь файл или ссылку. /cancel для отмены.")
             return WAITING_FOR_APP_FILE
 
         await update.message.reply_text(
-            f"🎉 Заявка принята!\n\n"
-            f"📱 *{app_name}*\n"
-            f"📱 Android: *{android_version}*\n"
-            f"📎 Ссылка: {link}\n\n"
+            f"Заявка принята!\n\n"
+            f"{app_name}\n"
+            f"Android: {android_version}\n"
+            f"Ссылка: {link}\n\n"
             f"Модераторы проверят её.",
-            parse_mode="Markdown",
             disable_web_page_preview=True
         )
         await notify_admins(context, user_name, username, app_name, android_version, None, user_id, link, is_link=True)
 
     elif update.message.photo:
-        await update.message.reply_text("❌ Это фото. Отправь APK-файл или ссылку. /cancel для отмены.")
+        await update.message.reply_text("Это фото. Отправь APK-файл или ссылку. /cancel для отмены.")
         return WAITING_FOR_APP_FILE
     else:
-        await update.message.reply_text("❌ Отправь APK-файл или ссылку. /cancel для отмены.")
+        await update.message.reply_text("Отправь APK-файл или ссылку. /cancel для отмены.")
         return WAITING_FOR_APP_FILE
 
     context.user_data.clear()
     return ConversationHandler.END
 
 async def notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, file_or_link, yadisk_url=None, is_link=False):
-    """Отправляет уведомления всем админам."""
     if is_link:
-        text = f"📦 Новая заявка!\n👤 {user_name}"
-        if username: text += f" (@{username})"
-        text += f"\n📱 {app_name}\n📱 Android: {android_version}\n📎 Ссылка: {file_or_link}\n🆔 ID: {user_id}"
+        text = f"Новая заявка!\nОт: {user_name}"
+        if username:
+            text += f" (@{username})"
+        text += f"\nПриложение: {app_name}\nAndroid: {android_version}\nСсылка: {file_or_link}\nID: {user_id}"
     else:
-        text = f"📦 Новая заявка!\n👤 {user_name}"
-        if username: text += f" (@{username})"
-        text += f"\n📱 {app_name}\n📱 Android: {android_version}\n📦 {size_mb} МБ\n🆔 ID: {user_id}"
+        text = f"Новая заявка!\nОт: {user_name}"
+        if username:
+            text += f" (@{username})"
+        text += f"\nПриложение: {app_name}\nAndroid: {android_version}\nРазмер: {size_mb} МБ\nID: {user_id}"
         if yadisk_url:
-            text += f"\n☁️ Яндекс.Диск: {yadisk_url}"
+            text += f"\nЯндекс.Диск: {yadisk_url}"
 
     for admin_id in ADMIN_IDS:
         try:
@@ -229,7 +215,7 @@ async def notify_admins(context, user_name, username, app_name, android_version,
             logger.error(f"Ошибка отправки админу {admin_id}: {te}")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚫 Отменено. /suggest — новая заявка.")
+    await update.message.reply_text("Отменено. /suggest — новая заявка.")
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -254,13 +240,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(suggest_conversation)
 
-    # Установим библиотеку requests, если её нет
-    try:
-        import requests
-    except ImportError:
-        os.system("pip install requests")
-
-    print("🤖 OldDroidMarketBot запущен с Яндекс.Диском!")
+    print("OldDroidMarketBot запущен с Яндекс.Диском!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
