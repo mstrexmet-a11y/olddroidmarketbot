@@ -2,6 +2,8 @@ import logging
 import os
 import re
 import requests
+from threading import Thread
+from flask import Flask
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -19,6 +21,8 @@ ADMIN_IDS = [8285884336, 6011748459]
 YANDEX_TOKEN = "y0__wgBEMrpquAFGLqxRiDavp28GDDzmNDsB4oiEFsiUYNKpYYSXyARIj2hc73I"
 YANDEX_FOLDER = "OldDroidMarket"
 
+PORT = int(os.environ.get("PORT", 10000))
+
 WAITING_FOR_APP_NAME, WAITING_FOR_ANDROID_VERSION, WAITING_FOR_APP_FILE = range(3)
 
 SAVE_DIR = "suggested_apps"
@@ -31,7 +35,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- Веб-сервер для Render ---
+app = Flask(__name__)
 
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+def run_web_server():
+    app.run(host='0.0.0.0', port=PORT)
+
+# --- Яндекс.Диск ---
 def upload_to_yandex_disk(local_path, filename):
     try:
         headers = {"Authorization": f"OAuth {YANDEX_TOKEN}"}
@@ -69,11 +83,8 @@ def upload_to_yandex_disk(local_path, filename):
 
 
 def check_android_version(version_str):
-    """Проверяет, что версия Android не выше 4.4.4. Возвращает (True, '') если всё ок."""
     try:
         version_str = version_str.strip()
-        
-        # Извлекаем только цифры и точки
         match = re.search(r'(\d+(?:\.\d+)*)', version_str)
         if not match:
             return True, ""
@@ -85,7 +96,6 @@ def check_android_version(version_str):
         minor = int(parts[1]) if len(parts) > 1 else 0
         micro = int(parts[2]) if len(parts) > 2 else 0
         
-        # Проверка: только до 4.4.4 включительно
         if major > 4:
             return False, f"❌ Версия Android {version_num} слишком новая!\nНаш магазин только для Android **до 4.4.4 включительно**.\nВведи версию не выше 4.4.4 (например: 4.4.4, 2.3, 4.0)."
         elif major == 4:
@@ -279,6 +289,12 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 def main():
+    # Запускаем веб-сервер в отдельном потоке
+    web_thread = Thread(target=run_web_server)
+    web_thread.daemon = True
+    web_thread.start()
+    
+    # Запускаем бота
     application = Application.builder().token(BOT_TOKEN).build()
 
     suggest_conversation = ConversationHandler(
@@ -299,7 +315,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(suggest_conversation)
 
-    print("🤖 OldDroidMarketBot запущен и ждет заявок...")
+    print("🤖 OldDroidMarketBot запущен с веб-сервером!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
