@@ -4,11 +4,12 @@ import re
 import requests
 from threading import Thread
 from flask import Flask
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     filters,
     ContextTypes,
     ConversationHandler,
@@ -35,7 +36,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Веб-сервер для Render ---
+# Хранилище заявок (в памяти, сбросится при перезапуске)
+suggestions = {}
+
+# --- Веб-сервер ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -206,6 +210,20 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             size_mb = round(os.path.getsize(local_path) / (1024 * 1024), 1)
 
+            # Сохраняем заявку
+            suggestion_id = str(user_id)
+            suggestions[suggestion_id] = {
+                "user_id": user_id,
+                "user_name": user_name,
+                "username": username,
+                "app_name": app_name,
+                "android_version": android_version,
+                "size_mb": size_mb,
+                "file_path": local_path,
+                "yadisk_url": yadisk_url,
+                "status": "pending"
+            }
+
             if yadisk_url:
                 await update.message.reply_text(
                     f"🎉 Отлично! Твоя заявка на *{app_name}* принята.\n\n"
@@ -238,6 +256,21 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return WAITING_FOR_APP_FILE
 
+        # Сохраняем заявку со ссылкой
+        suggestion_id = str(user_id)
+        suggestions[suggestion_id] = {
+            "user_id": user_id,
+            "user_name": user_name,
+            "username": username,
+            "app_name": app_name,
+            "android_version": android_version,
+            "size_mb": None,
+            "file_path": link,
+            "yadisk_url": link,
+            "is_link": True,
+            "status": "pending"
+        }
+
         await update.message.reply_text(
             f"🎉 Отлично! Твоя заявка на *{app_name}* принята.\n\n"
             f"📱 Мин. Android: *{android_version}*\n"
@@ -258,43 +291,113 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     return ConversationHandler.END
 
+
 async def notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, file_or_link, yadisk_url=None, is_link=False):
+    """Отправляет уведомления админам с кнопками."""
     if is_link:
         text = f"📦 Новая заявка!\n\n👤 От: {user_name}"
         if username:
             text += f" (@{username})"
-        text += f"\n📱 Приложение: {app_name}\n📱 Мин. Android: {android_version}\n📎 Ссылка: {file_or_link}\n🆔 ID: {user_id}"
+        text += f"\n📱 Приложение: {app_name}\n📱 Мин. Android: {android_version}\n📎 Ссылка: {file_or_link}\n🆔 ID: {user_id}\n📌 Статус: ⏳ На рассмотрении"
     else:
         text = f"📦 Новая заявка!\n\n👤 От: {user_name}"
         if username:
             text += f" (@{username})"
-        text += f"\n📱 Приложение: {app_name}\n📱 Мин. Android: {android_version}\n📦 Размер: {size_mb} МБ\n🆔 ID: {user_id}"
+        text += f"\n📱 Приложение: {app_name}\n📱 Мин. Android: {android_version}\n📦 Размер: {size_mb} МБ\n🆔 ID: {user_id}\n📌 Статус: ⏳ На рассмотрении"
         if yadisk_url:
             text += f"\n☁️ Яндекс.Диск: {yadisk_url}"
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{user_id}"),
+            InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{user_id}")
+        ]
+    ])
 
     for admin_id in ADMIN_IDS:
         try:
             if not is_link and file_or_link and os.path.exists(file_or_link):
-                await context.bot.send_message(chat_id=admin_id, text=text, disable_web_page_preview=True)
+                await context.bot.send_message(chat_id=admin_id, text=text, disable_web_page_preview=True, reply_markup=keyboard)
                 with open(file_or_link, "rb") as f:
                     await context.bot.send_document(chat_id=admin_id, document=f, filename=os.path.basename(file_or_link))
             else:
-                await context.bot.send_message(chat_id=admin_id, text=text, disable_web_page_preview=True)
+                await context.bot.send_message(chat_id=admin_id, text=text, disable_web_page_preview=True, reply_markup=keyboard)
         except TelegramError as te:
             logger.error(f"Ошибка отправки админу {admin_id}: {te}")
+
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает нажатия кнопок."""
+    query = update.callback_query
+    await query.answer()
+    
+    admin_id = query.from_user.id
+    
+    # Проверяем, что нажал админ
+    if admin_id not in ADMIN_IDS:
+        await query.message.reply_text("❌ У вас нет прав для этого действия.")
+        return
+    
+    data = query.data
+    
+    if data.startswith("approve_"):
+        user_id = data.replace("approve_", "")
+        if user_id in suggestions:
+            suggestions[user_id]["status"] = "approved"
+            app_name = suggestions[user_id]["app_name"]
+            
+            # Уведомляем пользователя
+            try:
+                await context.bot.send_message(
+                    chat_id=int(user_id),
+                    text=f"✅ Ваша заявка на *{app_name}* **одобрена!**\n\n"
+                         f"Приложение будет добавлено в магазин OldDroidMarket.",
+                    parse_mode="Markdown"
+                )
+            except:
+                pass
+            
+            # Обновляем сообщение у админов
+            await query.edit_message_text(
+                text=query.message.text.replace("⏳ На рассмотрении", "✅ Одобрено"),
+                reply_markup=None
+            )
+            
+    elif data.startswith("reject_"):
+        user_id = data.replace("reject_", "")
+        if user_id in suggestions:
+            suggestions[user_id]["status"] = "rejected"
+            app_name = suggestions[user_id]["app_name"]
+            
+            # Уведомляем пользователя
+            try:
+                await context.bot.send_message(
+                    chat_id=int(user_id),
+                    text=f"❌ Ваша заявка на *{app_name}* **отклонена.**\n\n"
+                         f"Возможно, приложение не соответствует требованиям магазина.",
+                    parse_mode="Markdown"
+                )
+            except:
+                pass
+            
+            # Обновляем сообщение у админов
+            await query.edit_message_text(
+                text=query.message.text.replace("⏳ На рассмотрении", "❌ Отклонено"),
+                reply_markup=None
+            )
+
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🚫 Предложение отменено. Если передумаешь, просто нажми /suggest.")
     context.user_data.clear()
     return ConversationHandler.END
 
+
 def main():
-    # Запускаем веб-сервер в отдельном потоке
     web_thread = Thread(target=run_web_server)
     web_thread.daemon = True
     web_thread.start()
     
-    # Запускаем бота
     application = Application.builder().token(BOT_TOKEN).build()
 
     suggest_conversation = ConversationHandler(
@@ -314,8 +417,9 @@ def main():
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(suggest_conversation)
+    application.add_handler(CallbackQueryHandler(button_handler))
 
-    print("🤖 OldDroidMarketBot запущен с веб-сервером!")
+    print("🤖 OldDroidMarketBot запущен с кнопками модерации!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
