@@ -36,7 +36,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Хранилище заявок
 suggestions = {}
 processed_suggestions = {}
 
@@ -63,7 +62,7 @@ def upload_to_yandex_disk(local_path, filename):
         upload_url = resp.json().get("href")
 
         if not upload_url:
-            logger.error(f"Не удалось получить ссылку: {resp.json()}")
+            logger.error(f"❌ Не удалось получить ссылку: {resp.json()}")
             return None
 
         with open(local_path, "rb") as f:
@@ -79,11 +78,11 @@ def upload_to_yandex_disk(local_path, filename):
             logger.info(f"✅ Загружено на Яндекс.Диск: {public_url}")
             return public_url
         else:
-            logger.error(f"Ошибка загрузки: {upload_resp.status_code}")
+            logger.error(f"❌ Ошибка загрузки: {upload_resp.status_code}")
             return None
 
     except Exception as e:
-        logger.error(f"Ошибка Яндекс.Диск: {e}")
+        logger.error(f"❌ Ошибка Яндекс.Диск: {e}")
         return None
 
 
@@ -244,7 +243,7 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, local_path, yadisk_url)
 
         except Exception as e:
-            logger.error(f"Ошибка: {e}")
+            logger.error(f"❌ Ошибка: {e}")
             await update.message.reply_text(f"❌ Произошла ошибка: {e}")
 
     elif update.message.text:
@@ -292,7 +291,6 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, file_or_link, yadisk_url=None, is_link=False):
-    """Отправляет уведомления админам с кнопками."""
     if is_link:
         text = f"📦 Новая заявка!\n\n👤 От: {user_name}"
         if username:
@@ -322,11 +320,10 @@ async def notify_admins(context, user_name, username, app_name, android_version,
             else:
                 await context.bot.send_message(chat_id=admin_id, text=text, disable_web_page_preview=True, reply_markup=keyboard)
         except TelegramError as te:
-            logger.error(f"Ошибка отправки админу {admin_id}: {te}")
+            logger.error(f"❌ Ошибка отправки админу {admin_id}: {te}")
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает нажатия кнопок."""
     query = update.callback_query
     await query.answer()
     
@@ -343,7 +340,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         action = "approve" if data.startswith("approve_") else "reject"
         user_id = data.replace(f"{action}_", "")
         
-        # Проверяем, не обработана ли уже заявка
         if user_id in processed_suggestions:
             who = processed_suggestions[user_id]["admin_name"]
             what = "одобрена" if processed_suggestions[user_id]["action"] == "approve" else "отклонена"
@@ -351,7 +347,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         if user_id in suggestions:
-            # Сохраняем обработку
             processed_suggestions[user_id] = {
                 "action": action,
                 "admin_name": admin_name,
@@ -361,7 +356,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             suggestions[user_id]["status"] = "approved" if action == "approve" else "rejected"
             app_name = suggestions[user_id]["app_name"]
             
-            # Уведомляем пользователя
             emoji_status = "✅" if action == "approve" else "❌"
             status_text_full = "одобрена" if action == "approve" else "отклонена"
             
@@ -374,29 +368,153 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown"
                 )
             except Exception as e:
-                logger.error(f"Не удалось уведомить пользователя {user_id}: {e}")
+                logger.error(f"❌ Не удалось уведомить пользователя {user_id}: {e}")
             
-            # Обновляем сообщение у текущего админа
             status_emoji = "✅ Одобрено" if action == "approve" else "❌ Отклонено"
             new_text = query.message.text.replace("⏳ На рассмотрении", f"{status_emoji} ({admin_name})")
             
-            await query.edit_message_text(
-                text=new_text,
-                reply_markup=None
-            )
+            await query.edit_message_text(text=new_text, reply_markup=None)
             
-            # Уведомляем второго админа
             for other_admin_id in ADMIN_IDS:
                 if other_admin_id != admin_id:
                     try:
                         await context.bot.send_message(
                             chat_id=other_admin_id,
-                            text=f"📢 Заявка на *{app_name}* (ID: {user_id}) уже обработана!\n"
-                                 f"{status_emoji} админом {admin_name}",
+                            text=f"📢 Заявка на *{app_name}* (ID: {user_id}) уже обработана!\n{status_emoji} админом {admin_name}",
                             parse_mode="Markdown"
                         )
                     except:
                         pass
+
+
+async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admin_id = update.message.from_user.id
+    admin_name = update.message.from_user.full_name
+    
+    if admin_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ У вас нет прав для этого действия.")
+        return
+    
+    if not update.message.reply_to_message:
+        await update.message.reply_text("📝 Ответьте на сообщение с заявкой командой /approve")
+        return
+    
+    reply_text = update.message.reply_to_message.text or ""
+    match = re.search(r'🆔 ID:\s*(\d+)', reply_text)
+    
+    if not match:
+        await update.message.reply_text("❌ Не удалось найти ID в сообщении. Убедитесь, что отвечаете на заявку.")
+        return
+    
+    user_id = match.group(1)
+    
+    if user_id in processed_suggestions:
+        who = processed_suggestions[user_id]["admin_name"]
+        what = "одобрена" if processed_suggestions[user_id]["action"] == "approve" else "отклонена"
+        await update.message.reply_text(f"⚠️ Эта заявка уже {what} админом {who}!")
+        return
+    
+    if user_id not in suggestions:
+        await update.message.reply_text("❌ Заявка не найдена.")
+        return
+    
+    processed_suggestions[user_id] = {
+        "action": "approve",
+        "admin_name": admin_name,
+        "admin_id": admin_id
+    }
+    
+    suggestions[user_id]["status"] = "approved"
+    app_name = suggestions[user_id]["app_name"]
+    
+    try:
+        await context.bot.send_message(
+            chat_id=int(user_id),
+            text=f"✅ Ваша заявка на *{app_name}* **одобрена!**\n\n"
+                 f"Администратор: {admin_name}\n"
+                 f"🎉 Приложение будет добавлено в магазин OldDroidMarket!",
+            parse_mode="Markdown"
+        )
+    except:
+        pass
+    
+    await update.message.reply_text(f"✅ Заявка на *{app_name}* (ID: {user_id}) одобрена!", parse_mode="Markdown")
+    
+    for other_id in ADMIN_IDS:
+        if other_id != admin_id:
+            try:
+                await context.bot.send_message(
+                    chat_id=other_id,
+                    text=f"📢 Заявка на *{app_name}* (ID: {user_id}) уже обработана!\n✅ Одобрено админом {admin_name}",
+                    parse_mode="Markdown"
+                )
+            except:
+                pass
+
+
+async def reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admin_id = update.message.from_user.id
+    admin_name = update.message.from_user.full_name
+    
+    if admin_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ У вас нет прав для этого действия.")
+        return
+    
+    if not update.message.reply_to_message:
+        await update.message.reply_text("📝 Ответьте на сообщение с заявкой командой /reject")
+        return
+    
+    reply_text = update.message.reply_to_message.text or ""
+    match = re.search(r'🆔 ID:\s*(\d+)', reply_text)
+    
+    if not match:
+        await update.message.reply_text("❌ Не удалось найти ID в сообщении.")
+        return
+    
+    user_id = match.group(1)
+    
+    if user_id in processed_suggestions:
+        who = processed_suggestions[user_id]["admin_name"]
+        what = "одобрена" if processed_suggestions[user_id]["action"] == "approve" else "отклонена"
+        await update.message.reply_text(f"⚠️ Эта заявка уже {what} админом {who}!")
+        return
+    
+    if user_id not in suggestions:
+        await update.message.reply_text("❌ Заявка не найдена.")
+        return
+    
+    processed_suggestions[user_id] = {
+        "action": "reject",
+        "admin_name": admin_name,
+        "admin_id": admin_id
+    }
+    
+    suggestions[user_id]["status"] = "rejected"
+    app_name = suggestions[user_id]["app_name"]
+    
+    try:
+        await context.bot.send_message(
+            chat_id=int(user_id),
+            text=f"❌ Ваша заявка на *{app_name}* **отклонена.**\n\n"
+                 f"Администратор: {admin_name}\n"
+                 f"😔 Возможно, приложение не соответствует требованиям.",
+            parse_mode="Markdown"
+        )
+    except:
+        pass
+    
+    await update.message.reply_text(f"❌ Заявка на *{app_name}* (ID: {user_id}) отклонена.", parse_mode="Markdown")
+    
+    for other_id in ADMIN_IDS:
+        if other_id != admin_id:
+            try:
+                await context.bot.send_message(
+                    chat_id=other_id,
+                    text=f"📢 Заявка на *{app_name}* (ID: {user_id}) уже обработана!\n❌ Отклонено админом {admin_name}",
+                    parse_mode="Markdown"
+                )
+            except:
+                pass
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -430,8 +548,10 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(suggest_conversation)
     application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(CommandHandler("approve", approve_command))
+    application.add_handler(CommandHandler("reject", reject_command))
 
-    print("🤖 OldDroidMarketBot запущен с кнопками модерации!")
+    print("🤖 OldDroidMarketBot запущен с кнопками и командами модерации!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
