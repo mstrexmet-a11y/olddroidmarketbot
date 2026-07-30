@@ -36,8 +36,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Хранилище заявок (в памяти, сбросится при перезапуске)
+# Хранилище заявок
 suggestions = {}
+processed_suggestions = {}
 
 # --- Веб-сервер ---
 app = Flask(__name__)
@@ -75,7 +76,7 @@ def upload_to_yandex_disk(local_path, filename):
             info_resp = requests.get("https://cloud-api.yandex.net/v1/disk/resources", headers=headers, params={"path": upload_path})
             public_url = info_resp.json().get("public_url")
 
-            logger.info(f"Загружено на Яндекс.Диск: {public_url}")
+            logger.info(f"✅ Загружено на Яндекс.Диск: {public_url}")
             return public_url
         else:
             logger.error(f"Ошибка загрузки: {upload_resp.status_code}")
@@ -101,12 +102,12 @@ def check_android_version(version_str):
         micro = int(parts[2]) if len(parts) > 2 else 0
         
         if major > 4:
-            return False, f"❌ Версия Android {version_num} слишком новая!\nНаш магазин только для Android **до 4.4.4 включительно**.\nВведи версию не выше 4.4.4 (например: 4.4.4, 2.3, 4.0)."
+            return False, f"❌ Версия Android {version_num} слишком новая!\n📱 Наш магазин только для Android **до 4.4.4 включительно**.\n📝 Введи версию не выше 4.4.4 (например: 4.4.4, 2.3, 4.0)."
         elif major == 4:
             if minor > 4:
-                return False, f"❌ Версия Android {version_num} слишком новая!\nНаш магазин только для Android **до 4.4.4 включительно**.\nВведи версию не выше 4.4.4 (например: 4.4.4, 2.3, 4.0)."
+                return False, f"❌ Версия Android {version_num} слишком новая!\n📱 Наш магазин только для Android **до 4.4.4 включительно**.\n📝 Введи версию не выше 4.4.4 (например: 4.4.4, 2.3, 4.0)."
             elif minor == 4 and micro > 4:
-                return False, f"❌ Версия Android {version_num} слишком новая!\nНаш магазин только для Android **до 4.4.4 включительно**.\nВведи версию не выше 4.4.4 (например: 4.4.4, 2.3, 4.0)."
+                return False, f"❌ Версия Android {version_num} слишком новая!\n📱 Наш магазин только для Android **до 4.4.4 включительно**.\n📝 Введи версию не выше 4.4.4 (например: 4.4.4, 2.3, 4.0)."
         
         return True, ""
     except ValueError:
@@ -199,18 +200,17 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             safe_filename = f"{user_id}_{app_name.replace(' ', '_')}.apk"
             local_path = os.path.join(SAVE_DIR, safe_filename)
 
-            loading_msg = await update.message.reply_text("⏳ Сохраняю файл...")
+            loading_msg = await update.message.reply_text("⏳ Сохраняю файл... ░░░░░░░░ 0%")
             await new_file.download_to_drive(local_path)
 
-            await loading_msg.edit_text("☁️ Загружаю на Яндекс.Диск...")
+            await loading_msg.edit_text("☁️ Загружаю на Яндекс.Диск... ████░░░░ 50%")
             yadisk_url = upload_to_yandex_disk(local_path, safe_filename)
 
-            await loading_msg.edit_text("✅ Готово!")
+            await loading_msg.edit_text("📦 Завершаю... ████████ 100%")
             await loading_msg.delete()
 
             size_mb = round(os.path.getsize(local_path) / (1024 * 1024), 1)
 
-            # Сохраняем заявку
             suggestion_id = str(user_id)
             suggestions[suggestion_id] = {
                 "user_id": user_id,
@@ -236,7 +236,7 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             else:
                 await update.message.reply_text(
-                    f"✅ Файл сохранён локально.\n"
+                    f"✅ Файл сохранён локально (загрузка на Диск не удалась).\n"
                     f"📱 *{app_name}* | Android: *{android_version}* | {size_mb} МБ",
                     parse_mode="Markdown"
                 )
@@ -256,7 +256,6 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return WAITING_FOR_APP_FILE
 
-        # Сохраняем заявку со ссылкой
         suggestion_id = str(user_id)
         suggestions[suggestion_id] = {
             "user_id": user_id,
@@ -332,59 +331,72 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     admin_id = query.from_user.id
+    admin_name = query.from_user.full_name
     
-    # Проверяем, что нажал админ
     if admin_id not in ADMIN_IDS:
-        await query.message.reply_text("❌ У вас нет прав для этого действия.")
+        await query.answer("❌ У вас нет прав!", show_alert=True)
         return
     
     data = query.data
     
-    if data.startswith("approve_"):
-        user_id = data.replace("approve_", "")
+    if data.startswith("approve_") or data.startswith("reject_"):
+        action = "approve" if data.startswith("approve_") else "reject"
+        user_id = data.replace(f"{action}_", "")
+        
+        # Проверяем, не обработана ли уже заявка
+        if user_id in processed_suggestions:
+            who = processed_suggestions[user_id]["admin_name"]
+            what = "одобрена" if processed_suggestions[user_id]["action"] == "approve" else "отклонена"
+            await query.answer(f"⚠️ Эта заявка уже {what} админом {who}!", show_alert=True)
+            return
+        
         if user_id in suggestions:
-            suggestions[user_id]["status"] = "approved"
+            # Сохраняем обработку
+            processed_suggestions[user_id] = {
+                "action": action,
+                "admin_name": admin_name,
+                "admin_id": admin_id
+            }
+            
+            suggestions[user_id]["status"] = "approved" if action == "approve" else "rejected"
             app_name = suggestions[user_id]["app_name"]
             
             # Уведомляем пользователя
+            emoji_status = "✅" if action == "approve" else "❌"
+            status_text_full = "одобрена" if action == "approve" else "отклонена"
+            
             try:
                 await context.bot.send_message(
                     chat_id=int(user_id),
-                    text=f"✅ Ваша заявка на *{app_name}* **одобрена!**\n\n"
-                         f"Приложение будет добавлено в магазин OldDroidMarket.",
+                    text=f"{emoji_status} Ваша заявка на *{app_name}* **{status_text_full}!**\n\n"
+                         f"Администратор: {admin_name}\n"
+                         f"{'🎉 Приложение будет добавлено в магазин OldDroidMarket!' if action == 'approve' else '😔 Возможно, приложение не соответствует требованиям.'}",
                     parse_mode="Markdown"
                 )
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"Не удалось уведомить пользователя {user_id}: {e}")
             
-            # Обновляем сообщение у админов
+            # Обновляем сообщение у текущего админа
+            status_emoji = "✅ Одобрено" if action == "approve" else "❌ Отклонено"
+            new_text = query.message.text.replace("⏳ На рассмотрении", f"{status_emoji} ({admin_name})")
+            
             await query.edit_message_text(
-                text=query.message.text.replace("⏳ На рассмотрении", "✅ Одобрено"),
+                text=new_text,
                 reply_markup=None
             )
             
-    elif data.startswith("reject_"):
-        user_id = data.replace("reject_", "")
-        if user_id in suggestions:
-            suggestions[user_id]["status"] = "rejected"
-            app_name = suggestions[user_id]["app_name"]
-            
-            # Уведомляем пользователя
-            try:
-                await context.bot.send_message(
-                    chat_id=int(user_id),
-                    text=f"❌ Ваша заявка на *{app_name}* **отклонена.**\n\n"
-                         f"Возможно, приложение не соответствует требованиям магазина.",
-                    parse_mode="Markdown"
-                )
-            except:
-                pass
-            
-            # Обновляем сообщение у админов
-            await query.edit_message_text(
-                text=query.message.text.replace("⏳ На рассмотрении", "❌ Отклонено"),
-                reply_markup=None
-            )
+            # Уведомляем второго админа
+            for other_admin_id in ADMIN_IDS:
+                if other_admin_id != admin_id:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=other_admin_id,
+                            text=f"📢 Заявка на *{app_name}* (ID: {user_id}) уже обработана!\n"
+                                 f"{status_emoji} админом {admin_name}",
+                            parse_mode="Markdown"
+                        )
+                    except:
+                        pass
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
