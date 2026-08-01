@@ -24,7 +24,7 @@ YANDEX_FOLDER = "OldDroidMarket"
 
 PORT = int(os.environ.get("PORT", 10000))
 
-WAITING_FOR_APP_NAME, WAITING_FOR_ANDROID_VERSION, WAITING_FOR_APP_FILE = range(3)
+WAITING_FOR_APP_NAME, WAITING_FOR_ANDROID_VERSION, WAITING_FOR_APP_FILE, WAITING_FOR_IDEA = range(4)
 
 SAVE_DIR = "suggested_apps"
 os.makedirs(SAVE_DIR, exist_ok=True)
@@ -38,6 +38,16 @@ logger = logging.getLogger(__name__)
 
 suggestions = {}
 processed_suggestions = {}
+
+AD_TEXT = (
+    "━━━━━━━━━━━━━━━\n"
+    "♟️ **CheckersNote** — шахматы и шашки в ретро-стиле!\n"
+    "📱 Для Android 4.4.2\n"
+    "🤖 Игра против ИИ или вдвоём\n"
+    "🎨 Классический дизайн\n"
+    "📦 Уже доступно в OldDroidMarket!\n"
+    "━━━━━━━━━━━━━━━"
+)
 
 # --- Веб-сервер ---
 app = Flask(__name__)
@@ -117,7 +127,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🕹️ Добро пожаловать в OldDroidMarketBot!\n\n"
         "Я помогу добавить приложение в наш магазин ретро-софта.\n"
-        "Используй команду /suggest, чтобы предложить свой APK.\n\n"
+        "Используй команду /suggest, чтобы предложить свой APK.\n"
+        "Используй команду /idea, чтобы предложить идею для сайта.\n\n"
         "📦 Файлы до 20 МБ — напрямую.\n"
         "📎 Большие файлы — присылай ссылкой на Яндекс.Диск.\n"
         "📱 Только Android до 4.4.4 включительно!"
@@ -229,14 +240,16 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"📱 Мин. Android: *{android_version}*\n"
                     f"📦 Размер: *{size_mb} МБ*\n"
                     f"☁️ [Ссылка на Яндекс.Диск]({yadisk_url})\n\n"
-                    f"Модераторы OldDroidMarket проверят её в ближайшее время.",
+                    f"Модераторы OldDroidMarket проверят её в ближайшее время.\n\n"
+                    f"{AD_TEXT}",
                     parse_mode="Markdown",
                     disable_web_page_preview=True
                 )
             else:
                 await update.message.reply_text(
                     f"✅ Файл сохранён локально (загрузка на Диск не удалась).\n"
-                    f"📱 *{app_name}* | Android: *{android_version}* | {size_mb} МБ",
+                    f"📱 *{app_name}* | Android: *{android_version}* | {size_mb} МБ\n\n"
+                    f"{AD_TEXT}",
                     parse_mode="Markdown"
                 )
 
@@ -273,7 +286,8 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🎉 Отлично! Твоя заявка на *{app_name}* принята.\n\n"
             f"📱 Мин. Android: *{android_version}*\n"
             f"📎 Ссылка: {link}\n\n"
-            f"Модераторы OldDroidMarket проверят её в ближайшее время.",
+            f"Модераторы OldDroidMarket проверят её в ближайшее время.\n\n"
+            f"{AD_TEXT}",
             parse_mode="Markdown",
             disable_web_page_preview=True
         )
@@ -287,6 +301,46 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return WAITING_FOR_APP_FILE
 
     context.user_data.clear()
+    return ConversationHandler.END
+
+
+# --- Идеи ---
+async def idea_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "💡 Давай предложим идею для OldDroidMarket!\n\n"
+        "Напиши свою идею в одном сообщении:\n"
+        "Или отправь /cancel для отмены."
+    )
+    return WAITING_FOR_IDEA
+
+async def receive_idea(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    user_name = update.message.from_user.full_name
+    username = update.message.from_user.username
+    idea_text = update.message.text
+
+    text = f"💡 Новая идея!\n\n👤 От: {user_name}"
+    if username:
+        text += f" (@{username})"
+    text += f"\n🆔 ID: {user_id}\n\n📝 Идея:\n{idea_text}"
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("👍 Принять", callback_data=f"accept_idea_{user_id}"),
+            InlineKeyboardButton("👎 Отклонить", callback_data=f"reject_idea_{user_id}")
+        ]
+    ])
+
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=text, reply_markup=keyboard)
+        except:
+            pass
+
+    await update.message.reply_text(
+        "✅ Спасибо за идею! Мы рассмотрим её в ближайшее время.\n"
+        "Если идея будет принята — ты получишь уведомление."
+    )
     return ConversationHandler.END
 
 
@@ -336,6 +390,40 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     data = query.data
     
+    # Обработка идей
+    if data.startswith("accept_idea_") or data.startswith("reject_idea_"):
+        action = "accept" if data.startswith("accept_idea_") else "reject"
+        user_id = data.replace(f"{action}_idea_", "")
+        
+        idea_status = "👍 Принята" if action == "accept" else "👎 Отклонена"
+        new_text = query.message.text + f"\n\n📌 Статус: {idea_status} ({admin_name})"
+        
+        await query.edit_message_text(text=new_text, reply_markup=None)
+        
+        try:
+            if action == "accept":
+                await context.bot.send_message(
+                    chat_id=int(user_id),
+                    text=f"🎉 Твоя идея **принята!**\n\n"
+                         f"Администратор: {admin_name}\n"
+                         f"Спасибо за вклад в развитие OldDroidMarket!",
+                    parse_mode="Markdown"
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=int(user_id),
+                    text=f"😔 Твоя идея **отклонена.**\n\n"
+                         f"Администратор: {admin_name}\n"
+                         f"Не расстраивайся, может быть в другой раз!",
+                    parse_mode="Markdown"
+                )
+        except:
+            pass
+        
+        await query.answer(f"✅ Идея {idea_status.lower()}!")
+        return
+    
+    # Обработка заявок
     if data.startswith("approve_") or data.startswith("reject_"):
         action = "approve" if data.startswith("approve_") else "reject"
         user_id = data.replace(f"{action}_", "")
@@ -518,7 +606,7 @@ async def reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚫 Предложение отменено. Если передумаешь, просто нажми /suggest.")
+    await update.message.reply_text("🚫 Предложение отменено. Если передумаешь, просто начни заново.")
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -545,13 +633,22 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
+    idea_conversation = ConversationHandler(
+        entry_points=[CommandHandler("idea", idea_start)],
+        states={
+            WAITING_FOR_IDEA: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_idea), CommandHandler("cancel", cancel)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    application.add_handler(idea_conversation)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(suggest_conversation)
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(CommandHandler("approve", approve_command))
     application.add_handler(CommandHandler("reject", reject_command))
 
-    print("🤖 OldDroidMarketBot запущен с кнопками и командами модерации!")
+    print("🤖 OldDroidMarketBot запущен с идеями, рекламой и модерацией!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
