@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import time
 import requests
 from threading import Thread
 from flask import Flask
@@ -38,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 suggestions = {}
 processed_suggestions = {}
+processed_ideas = {}
 
 AD_TEXT = (
     "━━━━━━━━━━━━━━━\n"
@@ -221,7 +223,7 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             size_mb = round(os.path.getsize(local_path) / (1024 * 1024), 1)
 
-            suggestion_id = str(user_id)
+            suggestion_id = f"{user_id}_{int(time.time())}"
             suggestions[suggestion_id] = {
                 "user_id": user_id,
                 "user_name": user_name,
@@ -253,7 +255,7 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown"
                 )
 
-            await notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, local_path, yadisk_url)
+            await notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, local_path, yadisk_url, suggestion_id)
 
         except Exception as e:
             logger.error(f"❌ Ошибка: {e}")
@@ -268,7 +270,7 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return WAITING_FOR_APP_FILE
 
-        suggestion_id = str(user_id)
+        suggestion_id = f"{user_id}_{int(time.time())}"
         suggestions[suggestion_id] = {
             "user_id": user_id,
             "user_name": user_name,
@@ -291,7 +293,7 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
             disable_web_page_preview=True
         )
-        await notify_admins(context, user_name, username, app_name, android_version, None, user_id, link, is_link=True)
+        await notify_admins(context, user_name, username, app_name, android_version, None, user_id, link, is_link=True, suggestion_id=suggestion_id)
 
     elif update.message.photo:
         await update.message.reply_text("❌ Это фото. Отправь APK-файл или ссылку. /cancel для отмены.")
@@ -319,15 +321,17 @@ async def receive_idea(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.message.from_user.username
     idea_text = update.message.text
 
+    idea_id = f"idea_{user_id}_{int(time.time())}"
+    
     text = f"💡 Новая идея!\n\n👤 От: {user_name}"
     if username:
         text += f" (@{username})"
-    text += f"\n🆔 ID: {user_id}\n\n📝 Идея:\n{idea_text}"
+    text += f"\n🆔 ID идеи: {idea_id}\n\n📝 Идея:\n{idea_text}"
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("👍 Принять", callback_data=f"accept_idea_{user_id}"),
-            InlineKeyboardButton("👎 Отклонить", callback_data=f"reject_idea_{user_id}")
+            InlineKeyboardButton("👍 Принять", callback_data=f"accept_idea_{idea_id}"),
+            InlineKeyboardButton("👎 Отклонить", callback_data=f"reject_idea_{idea_id}")
         ]
     ])
 
@@ -344,24 +348,24 @@ async def receive_idea(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-async def notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, file_or_link, yadisk_url=None, is_link=False):
+async def notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, file_or_link, yadisk_url=None, is_link=False, suggestion_id=None):
     if is_link:
         text = f"📦 Новая заявка!\n\n👤 От: {user_name}"
         if username:
             text += f" (@{username})"
-        text += f"\n📱 Приложение: {app_name}\n📱 Мин. Android: {android_version}\n📎 Ссылка: {file_or_link}\n🆔 ID: {user_id}\n📌 Статус: ⏳ На рассмотрении"
+        text += f"\n📱 Приложение: {app_name}\n📱 Мин. Android: {android_version}\n📎 Ссылка: {file_or_link}\n🆔 ID: {suggestion_id}\n📌 Статус: ⏳ На рассмотрении"
     else:
         text = f"📦 Новая заявка!\n\n👤 От: {user_name}"
         if username:
             text += f" (@{username})"
-        text += f"\n📱 Приложение: {app_name}\n📱 Мин. Android: {android_version}\n📦 Размер: {size_mb} МБ\n🆔 ID: {user_id}\n📌 Статус: ⏳ На рассмотрении"
+        text += f"\n📱 Приложение: {app_name}\n📱 Мин. Android: {android_version}\n📦 Размер: {size_mb} МБ\n🆔 ID: {suggestion_id}\n📌 Статус: ⏳ На рассмотрении"
         if yadisk_url:
             text += f"\n☁️ Яндекс.Диск: {yadisk_url}"
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{user_id}"),
-            InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{user_id}")
+            InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{suggestion_id}"),
+            InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{suggestion_id}")
         ]
     ])
 
@@ -393,13 +397,32 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Обработка идей
     if data.startswith("accept_idea_") or data.startswith("reject_idea_"):
         action = "accept" if data.startswith("accept_idea_") else "reject"
-        user_id = data.replace(f"{action}_idea_", "")
+        idea_id = data.replace(f"{action}_idea_", "")
+        
+        # Проверяем, не обработана ли уже идея
+        if idea_id in processed_ideas:
+            who = processed_ideas[idea_id]["admin_name"]
+            what = "принята" if processed_ideas[idea_id]["action"] == "accept" else "отклонена"
+            await query.answer(f"⚠️ Эта идея уже {what} админом {who}!", show_alert=True)
+            return
+        
+        # Сохраняем обработку
+        processed_ideas[idea_id] = {
+            "action": action,
+            "admin_name": admin_name,
+            "admin_id": admin_id
+        }
+        
+        # Извлекаем user_id из idea_id (формат: idea_USERID_TIME)
+        parts = idea_id.replace("idea_", "").split("_")
+        user_id = parts[0]
         
         idea_status = "👍 Принята" if action == "accept" else "👎 Отклонена"
         new_text = query.message.text + f"\n\n📌 Статус: {idea_status} ({admin_name})"
         
         await query.edit_message_text(text=new_text, reply_markup=None)
         
+        # Уведомляем автора идеи
         try:
             if action == "accept":
                 await context.bot.send_message(
@@ -420,29 +443,42 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
         
+        # Уведомляем второго админа
+        for other_admin_id in ADMIN_IDS:
+            if other_admin_id != admin_id:
+                try:
+                    await context.bot.send_message(
+                        chat_id=other_admin_id,
+                        text=f"📢 Идея (ID: {idea_id}) уже обработана!\n{idea_status} админом {admin_name}",
+                        parse_mode="Markdown"
+                    )
+                except:
+                    pass
+        
         await query.answer(f"✅ Идея {idea_status.lower()}!")
         return
     
     # Обработка заявок
     if data.startswith("approve_") or data.startswith("reject_"):
         action = "approve" if data.startswith("approve_") else "reject"
-        user_id = data.replace(f"{action}_", "")
+        suggestion_id = data.replace(f"{action}_", "")
         
-        if user_id in processed_suggestions:
-            who = processed_suggestions[user_id]["admin_name"]
-            what = "одобрена" if processed_suggestions[user_id]["action"] == "approve" else "отклонена"
+        if suggestion_id in processed_suggestions:
+            who = processed_suggestions[suggestion_id]["admin_name"]
+            what = "одобрена" if processed_suggestions[suggestion_id]["action"] == "approve" else "отклонена"
             await query.answer(f"⚠️ Эта заявка уже {what} админом {who}!", show_alert=True)
             return
         
-        if user_id in suggestions:
-            processed_suggestions[user_id] = {
+        if suggestion_id in suggestions:
+            processed_suggestions[suggestion_id] = {
                 "action": action,
                 "admin_name": admin_name,
                 "admin_id": admin_id
             }
             
-            suggestions[user_id]["status"] = "approved" if action == "approve" else "rejected"
-            app_name = suggestions[user_id]["app_name"]
+            suggestions[suggestion_id]["status"] = "approved" if action == "approve" else "rejected"
+            app_name = suggestions[suggestion_id]["app_name"]
+            user_id = suggestions[suggestion_id]["user_id"]
             
             emoji_status = "✅" if action == "approve" else "❌"
             status_text_full = "одобрена" if action == "approve" else "отклонена"
@@ -468,7 +504,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     try:
                         await context.bot.send_message(
                             chat_id=other_admin_id,
-                            text=f"📢 Заявка на *{app_name}* (ID: {user_id}) уже обработана!\n{status_emoji} админом {admin_name}",
+                            text=f"📢 Заявка на *{app_name}* (ID: {suggestion_id}) уже обработана!\n{status_emoji} админом {admin_name}",
                             parse_mode="Markdown"
                         )
                     except:
@@ -488,32 +524,33 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     reply_text = update.message.reply_to_message.text or ""
-    match = re.search(r'🆔 ID:\s*(\d+)', reply_text)
+    match = re.search(r'🆔 ID:\s*(\d+_\d+)', reply_text)
     
     if not match:
-        await update.message.reply_text("❌ Не удалось найти ID в сообщении. Убедитесь, что отвечаете на заявку.")
+        await update.message.reply_text("❌ Не удалось найти ID заявки. Убедитесь, что отвечаете на заявку.")
         return
     
-    user_id = match.group(1)
+    suggestion_id = match.group(1)
     
-    if user_id in processed_suggestions:
-        who = processed_suggestions[user_id]["admin_name"]
-        what = "одобрена" if processed_suggestions[user_id]["action"] == "approve" else "отклонена"
+    if suggestion_id in processed_suggestions:
+        who = processed_suggestions[suggestion_id]["admin_name"]
+        what = "одобрена" if processed_suggestions[suggestion_id]["action"] == "approve" else "отклонена"
         await update.message.reply_text(f"⚠️ Эта заявка уже {what} админом {who}!")
         return
     
-    if user_id not in suggestions:
+    if suggestion_id not in suggestions:
         await update.message.reply_text("❌ Заявка не найдена.")
         return
     
-    processed_suggestions[user_id] = {
+    processed_suggestions[suggestion_id] = {
         "action": "approve",
         "admin_name": admin_name,
         "admin_id": admin_id
     }
     
-    suggestions[user_id]["status"] = "approved"
-    app_name = suggestions[user_id]["app_name"]
+    suggestions[suggestion_id]["status"] = "approved"
+    app_name = suggestions[suggestion_id]["app_name"]
+    user_id = suggestions[suggestion_id]["user_id"]
     
     try:
         await context.bot.send_message(
@@ -526,14 +563,14 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         pass
     
-    await update.message.reply_text(f"✅ Заявка на *{app_name}* (ID: {user_id}) одобрена!", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ Заявка на *{app_name}* (ID: {suggestion_id}) одобрена!", parse_mode="Markdown")
     
     for other_id in ADMIN_IDS:
         if other_id != admin_id:
             try:
                 await context.bot.send_message(
                     chat_id=other_id,
-                    text=f"📢 Заявка на *{app_name}* (ID: {user_id}) уже обработана!\n✅ Одобрено админом {admin_name}",
+                    text=f"📢 Заявка на *{app_name}* (ID: {suggestion_id}) уже обработана!\n✅ Одобрено админом {admin_name}",
                     parse_mode="Markdown"
                 )
             except:
@@ -553,32 +590,33 @@ async def reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     reply_text = update.message.reply_to_message.text or ""
-    match = re.search(r'🆔 ID:\s*(\d+)', reply_text)
+    match = re.search(r'🆔 ID:\s*(\d+_\d+)', reply_text)
     
     if not match:
-        await update.message.reply_text("❌ Не удалось найти ID в сообщении.")
+        await update.message.reply_text("❌ Не удалось найти ID заявки.")
         return
     
-    user_id = match.group(1)
+    suggestion_id = match.group(1)
     
-    if user_id in processed_suggestions:
-        who = processed_suggestions[user_id]["admin_name"]
-        what = "одобрена" if processed_suggestions[user_id]["action"] == "approve" else "отклонена"
+    if suggestion_id in processed_suggestions:
+        who = processed_suggestions[suggestion_id]["admin_name"]
+        what = "одобрена" if processed_suggestions[suggestion_id]["action"] == "approve" else "отклонена"
         await update.message.reply_text(f"⚠️ Эта заявка уже {what} админом {who}!")
         return
     
-    if user_id not in suggestions:
+    if suggestion_id not in suggestions:
         await update.message.reply_text("❌ Заявка не найдена.")
         return
     
-    processed_suggestions[user_id] = {
+    processed_suggestions[suggestion_id] = {
         "action": "reject",
         "admin_name": admin_name,
         "admin_id": admin_id
     }
     
-    suggestions[user_id]["status"] = "rejected"
-    app_name = suggestions[user_id]["app_name"]
+    suggestions[suggestion_id]["status"] = "rejected"
+    app_name = suggestions[suggestion_id]["app_name"]
+    user_id = suggestions[suggestion_id]["user_id"]
     
     try:
         await context.bot.send_message(
@@ -591,14 +629,14 @@ async def reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         pass
     
-    await update.message.reply_text(f"❌ Заявка на *{app_name}* (ID: {user_id}) отклонена.", parse_mode="Markdown")
+    await update.message.reply_text(f"❌ Заявка на *{app_name}* (ID: {suggestion_id}) отклонена.", parse_mode="Markdown")
     
     for other_id in ADMIN_IDS:
         if other_id != admin_id:
             try:
                 await context.bot.send_message(
                     chat_id=other_id,
-                    text=f"📢 Заявка на *{app_name}* (ID: {user_id}) уже обработана!\n❌ Отклонено админом {admin_name}",
+                    text=f"📢 Заявка на *{app_name}* (ID: {suggestion_id}) уже обработана!\n❌ Отклонено админом {admin_name}",
                     parse_mode="Markdown"
                 )
             except:
@@ -648,7 +686,7 @@ def main():
     application.add_handler(CommandHandler("approve", approve_command))
     application.add_handler(CommandHandler("reject", reject_command))
 
-    print("🤖 OldDroidMarketBot запущен с идеями, рекламой и модерацией!")
+    print("🤖 OldDroidMarketBot запущен с исправленными идеями и заявками!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
