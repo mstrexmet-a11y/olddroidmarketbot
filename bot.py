@@ -64,12 +64,22 @@ def run_web_server():
     app.run(host='0.0.0.0', port=PORT)
 
 # --- Прямые ссылки ---
+def make_direct_url(yadisk_url):
+    """Преобразует ссылку Яндекс.Диска в прямую ссылку для скачивания."""
+    if not yadisk_url:
+        return None
+    # Заменяем на disk.hexed.pw для прямого скачивания
+    direct = yadisk_url.replace("https://disk.yandex.ru/d/", "http://disk.hexed.pw/d/")
+    direct = direct.replace("https://yadi.sk/d/", "http://disk.hexed.pw/d/")
+    direct = direct.replace("https://yadi.sk/i/", "http://disk.hexed.pw/i/")
+    return direct
+
 def save_direct_link(app_name, yadisk_url, suggestion_id):
     """Создаёт TXT-файл с названием приложения и прямой ссылкой на скачивание."""
     if not yadisk_url:
         return None, None
     
-    direct_url = yadisk_url.replace("yadi.sk", "hexed.pw").replace("disk.yandex.ru", "hexed.pw")
+    direct_url = make_direct_url(yadisk_url)
     
     safe_name = app_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
     filename = f"{suggestion_id}_{safe_name}.txt"
@@ -269,7 +279,7 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"🎉 Отлично! Твоя заявка на *{app_name}* принята.\n\n"
                     f"📱 Мин. Android: *{android_version}*\n"
                     f"📦 Размер: *{size_mb} МБ*\n"
-                    f"☁️ [Ссылка на Яндекс.Диск]({yadisk_url})\n"
+                    f"☁️ [Яндекс.Диск]({yadisk_url})\n"
                     f"📥 [Прямая ссылка]({direct_url})\n\n"
                     f"Модераторы OldDroidMarket проверят её в ближайшее время.\n\n"
                     f"{AD_TEXT}",
@@ -300,7 +310,7 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return WAITING_FOR_APP_FILE
 
         suggestion_id = f"{user_id}_{int(time.time())}"
-        direct_url = link.replace("yadi.sk", "hexed.pw").replace("disk.yandex.ru", "hexed.pw")
+        direct_url = make_direct_url(link)
         
         suggestions[suggestion_id] = {
             "user_id": user_id,
@@ -727,7 +737,7 @@ def main():
     application.add_handler(CommandHandler("approve", approve_command))
     application.add_handler(CommandHandler("reject", reject_command))
 
-    print("🤖 OldDroidMarketBot запущен с TXT-файлами для админов!")
+    print("🤖 OldDroidMarketBot запущен с правильными ссылками disk.hexed.pw!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
