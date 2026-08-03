@@ -4,6 +4,7 @@ import re
 import time
 import requests
 from threading import Thread
+from datetime import datetime
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -26,6 +27,8 @@ YANDEX_FOLDER = "OldDroidMarket"
 PORT = int(os.environ.get("PORT", 10000))
 
 WAITING_FOR_APP_NAME, WAITING_FOR_ANDROID_VERSION, WAITING_FOR_APP_FILE, WAITING_FOR_IDEA = range(4)
+WAITING_FOR_BROADCAST = 100
+WAITING_FOR_REJECT_REASON = 101
 
 SAVE_DIR = "suggested_apps"
 LINKS_DIR = "direct_links"
@@ -42,6 +45,8 @@ logger = logging.getLogger(__name__)
 suggestions = {}
 processed_suggestions = {}
 processed_ideas = {}
+user_apps = {}
+pending_reject = {}
 
 AD_TEXT = (
     "━━━━━━━━━━━━━━━\n"
@@ -53,7 +58,6 @@ AD_TEXT = (
     "━━━━━━━━━━━━━━━"
 )
 
-# --- Веб-сервер ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -63,70 +67,53 @@ def home():
 def run_web_server():
     app.run(host='0.0.0.0', port=PORT)
 
-# --- Прямые ссылки ---
+
 def make_direct_url(yadisk_url):
-    """Преобразует ссылку Яндекс.Диска в прямую ссылку для скачивания."""
     if not yadisk_url:
         return None
-    # Заменяем на disk.hexed.pw для прямого скачивания
     direct = yadisk_url.replace("https://disk.yandex.ru/d/", "http://disk.hexed.pw/d/")
     direct = direct.replace("https://yadi.sk/d/", "http://disk.hexed.pw/d/")
     direct = direct.replace("https://yadi.sk/i/", "http://disk.hexed.pw/i/")
     return direct
 
+
 def save_direct_link(app_name, yadisk_url, suggestion_id):
-    """Создаёт TXT-файл с названием приложения и прямой ссылкой на скачивание."""
     if not yadisk_url:
         return None, None
-    
     direct_url = make_direct_url(yadisk_url)
-    
     safe_name = app_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
     filename = f"{suggestion_id}_{safe_name}.txt"
     filepath = os.path.join(LINKS_DIR, filename)
-    
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(f"Название: {app_name}\n")
         f.write(f"Прямая ссылка: {direct_url}\n")
         f.write(f"Оригинальная ссылка: {yadisk_url}\n")
-    
-    logger.info(f"✅ Создан файл с прямой ссылкой: {filepath}")
+    logger.info(f"✅ TXT создан: {filepath}")
     return filepath, direct_url
 
-# --- Яндекс.Диск ---
+
 def upload_to_yandex_disk(local_path, filename):
     try:
         headers = {"Authorization": f"OAuth {YANDEX_TOKEN}"}
         params = {"path": f"/{YANDEX_FOLDER}"}
         requests.put("https://cloud-api.yandex.net/v1/disk/resources", headers=headers, params=params)
-
         upload_path = f"/{YANDEX_FOLDER}/{filename}"
         params = {"path": upload_path, "overwrite": "true"}
         resp = requests.get("https://cloud-api.yandex.net/v1/disk/resources/upload", headers=headers, params=params)
         upload_url = resp.json().get("href")
-
         if not upload_url:
-            logger.error(f"❌ Не удалось получить ссылку: {resp.json()}")
             return None
-
         with open(local_path, "rb") as f:
             upload_resp = requests.put(upload_url, files={"file": f})
-
         if upload_resp.status_code == 201:
             params = {"path": upload_path}
             requests.put("https://cloud-api.yandex.net/v1/disk/resources/publish", headers=headers, params=params)
-
             info_resp = requests.get("https://cloud-api.yandex.net/v1/disk/resources", headers=headers, params={"path": upload_path})
             public_url = info_resp.json().get("public_url")
-
-            logger.info(f"✅ Загружено на Яндекс.Диск: {public_url}")
             return public_url
-        else:
-            logger.error(f"❌ Ошибка загрузки: {upload_resp.status_code}")
-            return None
-
+        return None
     except Exception as e:
-        logger.error(f"❌ Ошибка Яндекс.Диск: {e}")
+        logger.error(f"❌ Яндекс.Диск: {e}")
         return None
 
 
@@ -136,22 +123,18 @@ def check_android_version(version_str):
         match = re.search(r'(\d+(?:\.\d+)*)', version_str)
         if not match:
             return True, ""
-        
         version_num = match.group(1)
         parts = version_num.split(".")
-        
         major = int(parts[0])
         minor = int(parts[1]) if len(parts) > 1 else 0
         micro = int(parts[2]) if len(parts) > 2 else 0
-        
         if major > 4:
-            return False, f"❌ Версия Android {version_num} слишком новая!\n📱 Наш магазин только для Android **до 4.4.4 включительно**.\n📝 Введи версию не выше 4.4.4 (например: 4.4.4, 2.3, 4.0)."
+            return False, f"❌ Версия Android {version_num} слишком новая!\n📱 Только до **4.4.4**."
         elif major == 4:
             if minor > 4:
-                return False, f"❌ Версия Android {version_num} слишком новая!\n📱 Наш магазин только для Android **до 4.4.4 включительно**.\n📝 Введи версию не выше 4.4.4 (например: 4.4.4, 2.3, 4.0)."
+                return False, f"❌ Версия Android {version_num} слишком новая!\n📱 Только до **4.4.4**."
             elif minor == 4 and micro > 4:
-                return False, f"❌ Версия Android {version_num} слишком новая!\n📱 Наш магазин только для Android **до 4.4.4 включительно**.\n📝 Введи версию не выше 4.4.4 (например: 4.4.4, 2.3, 4.0)."
-        
+                return False, f"❌ Версия Android {version_num} слишком новая!\n📱 Только до **4.4.4**."
         return True, ""
     except ValueError:
         return True, ""
@@ -160,54 +143,43 @@ def check_android_version(version_str):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🕹️ Добро пожаловать в OldDroidMarketBot!\n\n"
-        "Я помогу добавить приложение в наш магазин ретро-софта.\n"
-        "Используй команду /suggest, чтобы предложить свой APK.\n"
-        "Используй команду /idea, чтобы предложить идею для сайта.\n\n"
-        "📦 Файлы до 20 МБ — напрямую.\n"
-        "📎 Большие файлы — присылай ссылкой на Яндекс.Диск.\n"
-        "📱 Только Android до 4.4.4 включительно!"
+        "/suggest — предложить приложение\n"
+        "/idea — предложить идею\n"
+        "/myapps — мои заявки\n"
+        "/status ID — статус заявки\n"
+        "/catalog — каталог приложений\n\n"
+        "📱 Android до 4.4.4"
     )
 
+
 async def suggest_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📝 Давай оформим заявку.\n\n"
-        "Для начала введи **название приложения** (например, 'Opera Mini 4.2'):\n"
-        "Или отправь /cancel для отмены."
-    )
+    await update.message.reply_text("📝 Введи **название приложения**:\nИли /cancel")
     return WAITING_FOR_APP_NAME
+
 
 async def receive_app_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     app_name = update.message.text
     context.user_data["suggested_name"] = app_name
-
     await update.message.reply_text(
-        f"✅ Название: *{app_name}*\n\n"
-        f"Теперь укажи **минимальную версию Android** (например: 4.4.4, 2.3, 4.0):\n"
-        f"⚠️ Только версии **до 4.4.4 включительно!**\n"
-        "Или отправь /cancel для отмены.",
+        f"✅ Название: *{app_name}*\n\nУкажи **мин. версию Android** (до 4.4.4):\nИли /cancel",
         parse_mode="Markdown"
     )
     return WAITING_FOR_ANDROID_VERSION
 
+
 async def receive_android_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
     android_version = update.message.text.strip()
-    
     is_valid, error_msg = check_android_version(android_version)
     if not is_valid:
         await update.message.reply_text(error_msg)
         return WAITING_FOR_ANDROID_VERSION
-
     context.user_data["android_version"] = android_version
-
     await update.message.reply_text(
-        f"✅ Мин. Android: *{android_version}*\n\n"
-        f"Теперь отправь мне APK-файл или ссылку на Яндекс.Диск.\n\n"
-        "📦 Если файл **до 20 МБ** — пришли его как документ.\n"
-        "📎 Если файл **больше 20 МБ** — загрузи на Яндекс.Диск и пришли ссылку.\n\n"
-        "Или отправь /cancel для отмены.",
+        f"✅ Android: *{android_version}*\n\nОтправь APK-файл (до 20 МБ) или ссылку на Яндекс.Диск.\nИли /cancel",
         parse_mode="Markdown"
     )
     return WAITING_FOR_APP_FILE
+
 
 async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -219,483 +191,343 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.document:
         file = update.message.document
         file_name = file.file_name or ""
-
         if not file_name.lower().endswith(".apk"):
-            await update.message.reply_text(
-                f"❌ Бот принимает только файлы .apk! Ты отправил: {file_name}\n"
-                f"Или отправь ссылку на Яндекс.Диск.\n"
-                f"Или /cancel для отмены."
-            )
+            await update.message.reply_text("❌ Только .apk! /cancel")
             return WAITING_FOR_APP_FILE
-
         if file.file_size and file.file_size > MAX_FILE_SIZE:
             size_mb = round(file.file_size / (1024 * 1024), 1)
-            await update.message.reply_text(
-                f"❌ Файл слишком большой: *{size_mb} МБ*\n"
-                f"Максимальный размер для прямой загрузки: **20 МБ**.\n\n"
-                f"📎 Загрузи файл на **Яндекс.Диск** и пришли мне ссылку.\n"
-                f"Или отправь /cancel для отмены.",
-                parse_mode="Markdown"
-            )
+            await update.message.reply_text(f"❌ {size_mb} МБ > 20 МБ. Загрузи на Яндекс.Диск и пришли ссылку. /cancel")
             return WAITING_FOR_APP_FILE
-
         try:
             new_file = await context.bot.get_file(file.file_id)
             safe_filename = f"{user_id}_{app_name.replace(' ', '_')}.apk"
             local_path = os.path.join(SAVE_DIR, safe_filename)
-
-            loading_msg = await update.message.reply_text("⏳ Сохраняю файл... ░░░░░░░░ 0%")
+            loading_msg = await update.message.reply_text("⏳ Сохраняю...")
             await new_file.download_to_drive(local_path)
-
-            await loading_msg.edit_text("☁️ Загружаю на Яндекс.Диск... ████░░░░ 50%")
+            await loading_msg.edit_text("☁️ Загружаю на Яндекс.Диск...")
             yadisk_url = upload_to_yandex_disk(local_path, safe_filename)
-
-            await loading_msg.edit_text("📦 Завершаю... ████████ 100%")
             await loading_msg.delete()
-
             size_mb = round(os.path.getsize(local_path) / (1024 * 1024), 1)
-
             suggestion_id = f"{user_id}_{int(time.time())}"
             suggestions[suggestion_id] = {
-                "user_id": user_id,
-                "user_name": user_name,
-                "username": username,
-                "app_name": app_name,
-                "android_version": android_version,
-                "size_mb": size_mb,
-                "file_path": local_path,
-                "yadisk_url": yadisk_url,
-                "status": "pending"
+                "user_id": user_id, "user_name": user_name, "username": username,
+                "app_name": app_name, "android_version": android_version,
+                "size_mb": size_mb, "file_path": local_path, "yadisk_url": yadisk_url,
+                "status": "pending", "date": datetime.now().strftime("%d.%m.%Y %H:%M")
             }
-
-            # Создаём TXT с прямой ссылкой
-            direct_link_path = None
-            direct_url = None
+            if user_id not in user_apps:
+                user_apps[user_id] = []
+            user_apps[user_id].append(suggestion_id)
+            direct_link_path, direct_url = None, None
             if yadisk_url:
                 direct_link_path, direct_url = save_direct_link(app_name, yadisk_url, suggestion_id)
-
             if yadisk_url:
                 await update.message.reply_text(
-                    f"🎉 Отлично! Твоя заявка на *{app_name}* принята.\n\n"
-                    f"📱 Мин. Android: *{android_version}*\n"
-                    f"📦 Размер: *{size_mb} МБ*\n"
-                    f"☁️ [Яндекс.Диск]({yadisk_url})\n"
-                    f"📥 [Прямая ссылка]({direct_url})\n\n"
-                    f"Модераторы OldDroidMarket проверят её в ближайшее время.\n\n"
-                    f"{AD_TEXT}",
-                    parse_mode="Markdown",
-                    disable_web_page_preview=True
+                    f"🎉 Заявка на *{app_name}* принята!\n\n"
+                    f"📱 Android: *{android_version}*\n📦 {size_mb} МБ\n"
+                    f"🆔 ID: `{suggestion_id}`\n"
+                    f"📥 [Прямая ссылка]({direct_url})\n\n{AD_TEXT}",
+                    parse_mode="Markdown", disable_web_page_preview=True
                 )
             else:
-                await update.message.reply_text(
-                    f"✅ Файл сохранён локально (загрузка на Диск не удалась).\n"
-                    f"📱 *{app_name}* | Android: *{android_version}* | {size_mb} МБ\n\n"
-                    f"{AD_TEXT}",
-                    parse_mode="Markdown"
-                )
-
+                await update.message.reply_text(f"✅ Сохранено локально.\n🆔 ID: `{suggestion_id}`\n\n{AD_TEXT}", parse_mode="Markdown")
             await notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, local_path, yadisk_url, suggestion_id=suggestion_id, direct_url=direct_url, direct_link_path=direct_link_path)
-
         except Exception as e:
-            logger.error(f"❌ Ошибка: {e}")
-            await update.message.reply_text(f"❌ Произошла ошибка: {e}")
+            logger.error(f"❌ {e}")
+            await update.message.reply_text(f"❌ Ошибка: {e}")
 
     elif update.message.text:
         link = update.message.text.strip()
         if not (link.startswith("http://") or link.startswith("https://")):
-            await update.message.reply_text(
-                "❌ Это не похоже на ссылку. Отправь APK-файл или ссылку на Яндекс.Диск.\n"
-                "Или /cancel для отмены."
-            )
+            await update.message.reply_text("❌ Не ссылка. /cancel")
             return WAITING_FOR_APP_FILE
-
         suggestion_id = f"{user_id}_{int(time.time())}"
         direct_url = make_direct_url(link)
-        
         suggestions[suggestion_id] = {
-            "user_id": user_id,
-            "user_name": user_name,
-            "username": username,
-            "app_name": app_name,
-            "android_version": android_version,
-            "size_mb": None,
-            "file_path": link,
-            "yadisk_url": link,
-            "direct_url": direct_url,
-            "is_link": True,
-            "status": "pending"
+            "user_id": user_id, "user_name": user_name, "username": username,
+            "app_name": app_name, "android_version": android_version,
+            "size_mb": None, "file_path": link, "yadisk_url": link,
+            "direct_url": direct_url, "is_link": True, "status": "pending",
+            "date": datetime.now().strftime("%d.%m.%Y %H:%M")
         }
-        
-        # Создаём TXT с прямой ссылкой
+        if user_id not in user_apps:
+            user_apps[user_id] = []
+        user_apps[user_id].append(suggestion_id)
         direct_link_path, _ = save_direct_link(app_name, link, suggestion_id)
-
         await update.message.reply_text(
-            f"🎉 Отлично! Твоя заявка на *{app_name}* принята.\n\n"
-            f"📱 Мин. Android: *{android_version}*\n"
-            f"📎 Ссылка: {link}\n"
-            f"📥 Прямая ссылка: {direct_url}\n\n"
-            f"Модераторы OldDroidMarket проверят её в ближайшее время.\n\n"
-            f"{AD_TEXT}",
-            parse_mode="Markdown",
-            disable_web_page_preview=True
+            f"🎉 Заявка на *{app_name}* принята!\n\n"
+            f"📱 Android: *{android_version}*\n🆔 ID: `{suggestion_id}`\n"
+            f"📥 [Прямая ссылка]({direct_url})\n\n{AD_TEXT}",
+            parse_mode="Markdown", disable_web_page_preview=True
         )
         await notify_admins(context, user_name, username, app_name, android_version, None, user_id, link, is_link=True, suggestion_id=suggestion_id, direct_url=direct_url, direct_link_path=direct_link_path)
 
     elif update.message.photo:
-        await update.message.reply_text("❌ Это фото. Отправь APK-файл или ссылку. /cancel для отмены.")
+        await update.message.reply_text("❌ Это фото. /cancel")
         return WAITING_FOR_APP_FILE
     else:
-        await update.message.reply_text("❌ Отправь APK-файл или ссылку. /cancel для отмены.")
+        await update.message.reply_text("❌ Отправь файл или ссылку. /cancel")
         return WAITING_FOR_APP_FILE
 
     context.user_data.clear()
     return ConversationHandler.END
 
 
-# --- Идеи ---
 async def idea_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "💡 Давай предложим идею для OldDroidMarket!\n\n"
-        "Напиши свою идею в одном сообщении:\n"
-        "Или отправь /cancel для отмены."
-    )
+    await update.message.reply_text("💡 Напиши свою идею:\nИли /cancel")
     return WAITING_FOR_IDEA
+
 
 async def receive_idea(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     user_name = update.message.from_user.full_name
     username = update.message.from_user.username
     idea_text = update.message.text
-
     idea_id = f"idea_{user_id}_{int(time.time())}"
-    
-    text = f"💡 Новая идея!\n\n👤 От: {user_name}"
+    text = f"💡 Новая идея!\n\n👤 {user_name}"
     if username:
         text += f" (@{username})"
-    text += f"\n🆔 ID идеи: {idea_id}\n\n📝 Идея:\n{idea_text}"
-
+    text += f"\n🆔 {idea_id}\n\n📝 {idea_text}"
     keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("👍 Принять", callback_data=f"accept_idea_{idea_id}"),
-            InlineKeyboardButton("👎 Отклонить", callback_data=f"reject_idea_{idea_id}")
-        ]
+        [InlineKeyboardButton("👍 Принять", callback_data=f"accept_idea_{idea_id}"),
+         InlineKeyboardButton("👎 Отклонить", callback_data=f"reject_idea_{idea_id}")]
     ])
-
     for admin_id in ADMIN_IDS:
         try:
             await context.bot.send_message(chat_id=admin_id, text=text, reply_markup=keyboard)
         except:
             pass
-
-    await update.message.reply_text(
-        "✅ Спасибо за идею! Мы рассмотрим её в ближайшее время.\n"
-        "Если идея будет принята — ты получишь уведомление."
-    )
+    await update.message.reply_text("✅ Спасибо за идею!")
     return ConversationHandler.END
 
 
 async def notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, file_or_link, yadisk_url=None, is_link=False, suggestion_id=None, direct_url=None, direct_link_path=None):
     if is_link:
-        text = f"📦 Новая заявка!\n\n👤 От: {user_name}"
-        if username:
-            text += f" (@{username})"
-        text += f"\n📱 Приложение: {app_name}\n📱 Мин. Android: {android_version}\n📎 Ссылка: {file_or_link}"
-        if direct_url:
-            text += f"\n📥 Прямая ссылка: {direct_url}"
-        text += f"\n🆔 ID: {suggestion_id}\n📌 Статус: ⏳ На рассмотрении"
+        text = f"📦 Новая заявка!\n\n👤 {user_name}"
+        if username: text += f" (@{username})"
+        text += f"\n📱 {app_name}\n📱 Android: {android_version}\n📎 {file_or_link}"
+        if direct_url: text += f"\n📥 {direct_url}"
+        text += f"\n🆔 `{suggestion_id}`\n📌 ⏳ На рассмотрении"
     else:
-        text = f"📦 Новая заявка!\n\n👤 От: {user_name}"
-        if username:
-            text += f" (@{username})"
-        text += f"\n📱 Приложение: {app_name}\n📱 Мин. Android: {android_version}\n📦 Размер: {size_mb} МБ\n🆔 ID: {suggestion_id}\n📌 Статус: ⏳ На рассмотрении"
-        if yadisk_url:
-            text += f"\n☁️ Яндекс.Диск: {yadisk_url}"
-        if direct_url:
-            text += f"\n📥 Прямая ссылка: {direct_url}"
-
+        text = f"📦 Новая заявка!\n\n👤 {user_name}"
+        if username: text += f" (@{username})"
+        text += f"\n📱 {app_name}\n📱 Android: {android_version}\n📦 {size_mb} МБ\n🆔 `{suggestion_id}`\n📌 ⏳ На рассмотрении"
+        if yadisk_url: text += f"\n☁️ {yadisk_url}"
+        if direct_url: text += f"\n📥 {direct_url}"
     keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{suggestion_id}"),
-            InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{suggestion_id}")
-        ]
+        [InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{suggestion_id}"),
+         InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{suggestion_id}")]
     ])
-
     for admin_id in ADMIN_IDS:
         try:
             await context.bot.send_message(chat_id=admin_id, text=text, disable_web_page_preview=True, reply_markup=keyboard)
-            
             if not is_link and file_or_link and os.path.exists(file_or_link):
                 with open(file_or_link, "rb") as f:
                     await context.bot.send_document(chat_id=admin_id, document=f, filename=os.path.basename(file_or_link))
-            
-            # Отправляем TXT с прямой ссылкой
             if direct_link_path and os.path.exists(direct_link_path):
                 with open(direct_link_path, "rb") as f:
                     await context.bot.send_document(chat_id=admin_id, document=f, filename=os.path.basename(direct_link_path))
-                
         except TelegramError as te:
-            logger.error(f"❌ Ошибка отправки админу {admin_id}: {te}")
+            logger.error(f"❌ Ошибка админу {admin_id}: {te}")
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
     admin_id = query.from_user.id
     admin_name = query.from_user.full_name
-    
     if admin_id not in ADMIN_IDS:
-        await query.answer("❌ У вас нет прав!", show_alert=True)
+        await query.answer("❌ Нет прав!", show_alert=True)
         return
-    
     data = query.data
-    
-    # Обработка идей
+
     if data.startswith("accept_idea_") or data.startswith("reject_idea_"):
         action = "accept" if data.startswith("accept_idea_") else "reject"
         idea_id = data.replace(f"{action}_idea_", "")
-        
         if idea_id in processed_ideas:
             who = processed_ideas[idea_id]["admin_name"]
             what = "принята" if processed_ideas[idea_id]["action"] == "accept" else "отклонена"
-            await query.answer(f"⚠️ Эта идея уже {what} админом {who}!", show_alert=True)
+            await query.answer(f"⚠️ Уже {what} админом {who}!", show_alert=True)
             return
-        
-        processed_ideas[idea_id] = {
-            "action": action,
-            "admin_name": admin_name,
-            "admin_id": admin_id
-        }
-        
+        processed_ideas[idea_id] = {"action": action, "admin_name": admin_name, "admin_id": admin_id}
         parts = idea_id.replace("idea_", "").split("_")
         user_id = parts[0]
-        
         idea_status = "👍 Принята" if action == "accept" else "👎 Отклонена"
-        new_text = query.message.text + f"\n\n📌 Статус: {idea_status} ({admin_name})"
-        
+        new_text = query.message.text + f"\n\n📌 {idea_status} ({admin_name})"
         await query.edit_message_text(text=new_text, reply_markup=None)
-        
         try:
             if action == "accept":
-                await context.bot.send_message(
-                    chat_id=int(user_id),
-                    text=f"🎉 Твоя идея **принята!**\n\n"
-                         f"Администратор: {admin_name}\n"
-                         f"Спасибо за вклад в развитие OldDroidMarket!",
-                    parse_mode="Markdown"
-                )
+                await context.bot.send_message(chat_id=int(user_id), text=f"🎉 Твоя идея **принята!**\nАдминистратор: {admin_name}", parse_mode="Markdown")
             else:
-                await context.bot.send_message(
-                    chat_id=int(user_id),
-                    text=f"😔 Твоя идея **отклонена.**\n\n"
-                         f"Администратор: {admin_name}\n"
-                         f"Не расстраивайся, может быть в другой раз!",
-                    parse_mode="Markdown"
-                )
-        except:
-            pass
-        
-        for other_admin_id in ADMIN_IDS:
-            if other_admin_id != admin_id:
+                await context.bot.send_message(chat_id=int(user_id), text=f"😔 Твоя идея **отклонена.**\nАдминистратор: {admin_name}", parse_mode="Markdown")
+        except: pass
+        for other_id in ADMIN_IDS:
+            if other_id != admin_id:
                 try:
-                    await context.bot.send_message(
-                        chat_id=other_admin_id,
-                        text=f"📢 Идея (ID: {idea_id}) уже обработана!\n{idea_status} админом {admin_name}",
-                        parse_mode="Markdown"
-                    )
-                except:
-                    pass
-        
-        await query.answer(f"✅ Идея {idea_status.lower()}!")
+                    await context.bot.send_message(chat_id=other_id, text=f"📢 Идея {idea_id} обработана!\n{idea_status} админом {admin_name}")
+                except: pass
         return
-    
-    # Обработка заявок
+
     if data.startswith("approve_") or data.startswith("reject_"):
         action = "approve" if data.startswith("approve_") else "reject"
         suggestion_id = data.replace(f"{action}_", "")
-        
         if suggestion_id in processed_suggestions:
             who = processed_suggestions[suggestion_id]["admin_name"]
             what = "одобрена" if processed_suggestions[suggestion_id]["action"] == "approve" else "отклонена"
-            await query.answer(f"⚠️ Эта заявка уже {what} админом {who}!", show_alert=True)
+            await query.answer(f"⚠️ Уже {what} админом {who}!", show_alert=True)
             return
-        
         if suggestion_id in suggestions:
-            processed_suggestions[suggestion_id] = {
-                "action": action,
-                "admin_name": admin_name,
-                "admin_id": admin_id
-            }
-            
+            processed_suggestions[suggestion_id] = {"action": action, "admin_name": admin_name, "admin_id": admin_id}
             suggestions[suggestion_id]["status"] = "approved" if action == "approve" else "rejected"
             app_name = suggestions[suggestion_id]["app_name"]
             user_id = suggestions[suggestion_id]["user_id"]
-            
-            emoji_status = "✅" if action == "approve" else "❌"
-            status_text_full = "одобрена" if action == "approve" else "отклонена"
-            
+            emoji = "✅" if action == "approve" else "❌"
+            text_full = "одобрена" if action == "approve" else "отклонена"
             try:
-                await context.bot.send_message(
-                    chat_id=int(user_id),
-                    text=f"{emoji_status} Ваша заявка на *{app_name}* **{status_text_full}!**\n\n"
-                         f"Администратор: {admin_name}\n"
-                         f"{'🎉 Приложение будет добавлено в магазин OldDroidMarket!' if action == 'approve' else '😔 Возможно, приложение не соответствует требованиям.'}",
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.error(f"❌ Не удалось уведомить пользователя {user_id}: {e}")
-            
+                await context.bot.send_message(chat_id=int(user_id), text=f"{emoji} Заявка на *{app_name}* **{text_full}!**\nАдминистратор: {admin_name}", parse_mode="Markdown")
+            except: pass
             status_emoji = "✅ Одобрено" if action == "approve" else "❌ Отклонено"
             new_text = query.message.text.replace("⏳ На рассмотрении", f"{status_emoji} ({admin_name})")
-            
             await query.edit_message_text(text=new_text, reply_markup=None)
-            
-            for other_admin_id in ADMIN_IDS:
-                if other_admin_id != admin_id:
+            for other_id in ADMIN_IDS:
+                if other_id != admin_id:
                     try:
-                        await context.bot.send_message(
-                            chat_id=other_admin_id,
-                            text=f"📢 Заявка на *{app_name}* (ID: {suggestion_id}) уже обработана!\n{status_emoji} админом {admin_name}",
-                            parse_mode="Markdown"
-                        )
-                    except:
-                        pass
+                        await context.bot.send_message(chat_id=other_id, text=f"📢 Заявка на *{app_name}* ({suggestion_id}) обработана!\n{status_emoji} админом {admin_name}", parse_mode="Markdown")
+                    except: pass
 
 
 async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_id = update.message.from_user.id
     admin_name = update.message.from_user.full_name
-    
     if admin_id not in ADMIN_IDS:
-        await update.message.reply_text("❌ У вас нет прав для этого действия.")
+        await update.message.reply_text("❌ Нет прав.")
         return
-    
     if not update.message.reply_to_message:
-        await update.message.reply_text("📝 Ответьте на сообщение с заявкой командой /approve")
+        await update.message.reply_text("📝 Ответьте на заявку командой /approve")
         return
-    
     reply_text = update.message.reply_to_message.text or ""
-    match = re.search(r'🆔 ID:\s*(\d+_\d+)', reply_text)
-    
+    match = re.search(r'🆔 `(\d+_\d+)`', reply_text) or re.search(r'🆔 ID: `(\d+_\d+)`', reply_text) or re.search(r'🆔 (\d+_\d+)', reply_text)
     if not match:
-        await update.message.reply_text("❌ Не удалось найти ID заявки. Убедитесь, что отвечаете на заявку.")
+        await update.message.reply_text("❌ Не нашёл ID заявки.")
         return
-    
     suggestion_id = match.group(1)
-    
     if suggestion_id in processed_suggestions:
         who = processed_suggestions[suggestion_id]["admin_name"]
         what = "одобрена" if processed_suggestions[suggestion_id]["action"] == "approve" else "отклонена"
-        await update.message.reply_text(f"⚠️ Эта заявка уже {what} админом {who}!")
+        await update.message.reply_text(f"⚠️ Уже {what} админом {who}!")
         return
-    
     if suggestion_id not in suggestions:
         await update.message.reply_text("❌ Заявка не найдена.")
         return
-    
-    processed_suggestions[suggestion_id] = {
-        "action": "approve",
-        "admin_name": admin_name,
-        "admin_id": admin_id
-    }
-    
+    processed_suggestions[suggestion_id] = {"action": "approve", "admin_name": admin_name, "admin_id": admin_id}
     suggestions[suggestion_id]["status"] = "approved"
     app_name = suggestions[suggestion_id]["app_name"]
     user_id = suggestions[suggestion_id]["user_id"]
-    
     try:
-        await context.bot.send_message(
-            chat_id=int(user_id),
-            text=f"✅ Ваша заявка на *{app_name}* **одобрена!**\n\n"
-                 f"Администратор: {admin_name}\n"
-                 f"🎉 Приложение будет добавлено в магазин OldDroidMarket!",
-            parse_mode="Markdown"
-        )
-    except:
-        pass
-    
-    await update.message.reply_text(f"✅ Заявка на *{app_name}* (ID: {suggestion_id}) одобрена!", parse_mode="Markdown")
-    
+        await context.bot.send_message(chat_id=int(user_id), text=f"✅ Заявка на *{app_name}* **одобрена!**\nАдминистратор: {admin_name}", parse_mode="Markdown")
+    except: pass
+    await update.message.reply_text(f"✅ Заявка *{app_name}* ({suggestion_id}) одобрена!", parse_mode="Markdown")
     for other_id in ADMIN_IDS:
         if other_id != admin_id:
             try:
-                await context.bot.send_message(
-                    chat_id=other_id,
-                    text=f"📢 Заявка на *{app_name}* (ID: {suggestion_id}) уже обработана!\n✅ Одобрено админом {admin_name}",
-                    parse_mode="Markdown"
-                )
-            except:
-                pass
+                await context.bot.send_message(chat_id=other_id, text=f"📢 *{app_name}* ({suggestion_id}) одобрена админом {admin_name}", parse_mode="Markdown")
+            except: pass
 
 
 async def reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_id = update.message.from_user.id
     admin_name = update.message.from_user.full_name
-    
     if admin_id not in ADMIN_IDS:
-        await update.message.reply_text("❌ У вас нет прав для этого действия.")
+        await update.message.reply_text("❌ Нет прав.")
         return
-    
     if not update.message.reply_to_message:
-        await update.message.reply_text("📝 Ответьте на сообщение с заявкой командой /reject")
+        await update.message.reply_text("📝 Ответьте на заявку командой /reject")
         return
-    
     reply_text = update.message.reply_to_message.text or ""
-    match = re.search(r'🆔 ID:\s*(\d+_\d+)', reply_text)
-    
+    match = re.search(r'🆔 `(\d+_\d+)`', reply_text) or re.search(r'🆔 ID: `(\d+_\d+)`', reply_text) or re.search(r'🆔 (\d+_\d+)', reply_text)
     if not match:
-        await update.message.reply_text("❌ Не удалось найти ID заявки.")
+        await update.message.reply_text("❌ Не нашёл ID заявки.")
         return
-    
     suggestion_id = match.group(1)
-    
     if suggestion_id in processed_suggestions:
         who = processed_suggestions[suggestion_id]["admin_name"]
         what = "одобрена" if processed_suggestions[suggestion_id]["action"] == "approve" else "отклонена"
-        await update.message.reply_text(f"⚠️ Эта заявка уже {what} админом {who}!")
+        await update.message.reply_text(f"⚠️ Уже {what} админом {who}!")
         return
-    
     if suggestion_id not in suggestions:
         await update.message.reply_text("❌ Заявка не найдена.")
         return
-    
-    processed_suggestions[suggestion_id] = {
-        "action": "reject",
-        "admin_name": admin_name,
-        "admin_id": admin_id
-    }
-    
+    processed_suggestions[suggestion_id] = {"action": "reject", "admin_name": admin_name, "admin_id": admin_id}
     suggestions[suggestion_id]["status"] = "rejected"
     app_name = suggestions[suggestion_id]["app_name"]
     user_id = suggestions[suggestion_id]["user_id"]
-    
     try:
-        await context.bot.send_message(
-            chat_id=int(user_id),
-            text=f"❌ Ваша заявка на *{app_name}* **отклонена.**\n\n"
-                 f"Администратор: {admin_name}\n"
-                 f"😔 Возможно, приложение не соответствует требованиям.",
-            parse_mode="Markdown"
-        )
-    except:
-        pass
-    
-    await update.message.reply_text(f"❌ Заявка на *{app_name}* (ID: {suggestion_id}) отклонена.", parse_mode="Markdown")
-    
+        await context.bot.send_message(chat_id=int(user_id), text=f"❌ Заявка на *{app_name}* **отклонена.**\nАдминистратор: {admin_name}", parse_mode="Markdown")
+    except: pass
+    await update.message.reply_text(f"❌ Заявка *{app_name}* ({suggestion_id}) отклонена!", parse_mode="Markdown")
     for other_id in ADMIN_IDS:
         if other_id != admin_id:
             try:
-                await context.bot.send_message(
-                    chat_id=other_id,
-                    text=f"📢 Заявка на *{app_name}* (ID: {suggestion_id}) уже обработана!\n❌ Отклонено админом {admin_name}",
-                    parse_mode="Markdown"
-                )
-            except:
-                pass
+                await context.bot.send_message(chat_id=other_id, text=f"📢 *{app_name}* ({suggestion_id}) отклонена админом {admin_name}", parse_mode="Markdown")
+            except: pass
+
+
+async def myapps_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if user_id not in user_apps or not user_apps[user_id]:
+        await update.message.reply_text("📭 У вас пока нет заявок.")
+        return
+    text = "📋 **Ваши заявки:**\n\n"
+    for sid in user_apps[user_id][-10:]:
+        if sid in suggestions:
+            s = suggestions[sid]
+            status_map = {"pending": "⏳ На рассмотрении", "approved": "✅ Одобрена", "rejected": "❌ Отклонена"}
+            text += f"📱 {s['app_name']} | {s.get('android_version','?')}\n🆔 `{sid}`\n📌 {status_map.get(s['status'], s['status'])}\n\n"
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("📝 /status ID_заявки")
+        return
+    sid = context.args[0]
+    if sid in suggestions:
+        s = suggestions[sid]
+        status_map = {"pending": "⏳ На рассмотрении", "approved": "✅ Одобрена", "rejected": "❌ Отклонена"}
+        await update.message.reply_text(f"📱 {s['app_name']}\n🆔 `{sid}`\n📌 {status_map.get(s['status'], s['status'])}")
+    else:
+        await update.message.reply_text("❌ Заявка не найдена.")
+
+
+async def catalog_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    approved = [(sid, s) for sid, s in suggestions.items() if s.get("status") == "approved"]
+    if not approved:
+        await update.message.reply_text("📭 Нет одобренных приложений.")
+        return
+    text = "📦 **Каталог приложений:**\n\n"
+    for sid, s in approved[:20]:
+        direct = s.get("direct_url") or s.get("yadisk_url") or make_direct_url(s.get("yadisk_url"))
+        text += f"📱 {s['app_name']} | Android {s.get('android_version','?')}\n📥 [Скачать]({direct})\n\n"
+    await update.message.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admin_id = update.message.from_user.id
+    if admin_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Нет прав.")
+        return
+    total = len(suggestions)
+    approved = len([s for s in suggestions.values() if s["status"] == "approved"])
+    rejected = len([s for s in suggestions.values() if s["status"] == "rejected"])
+    pending = len([s for s in suggestions.values() if s["status"] == "pending"])
+    ideas = len(processed_ideas)
+    await update.message.reply_text(
+        f"📊 **Статистика:**\n\n📦 Всего заявок: {total}\n⏳ На рассмотрении: {pending}\n✅ Одобрено: {approved}\n❌ Отклонено: {rejected}\n💡 Идей: {ideas}"
+    )
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚫 Предложение отменено. Если передумаешь, просто начни заново.")
+    await update.message.reply_text("🚫 Отменено.")
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -704,7 +536,6 @@ def main():
     web_thread = Thread(target=run_web_server)
     web_thread.daemon = True
     web_thread.start()
-    
     application = Application.builder().token(BOT_TOKEN).build()
 
     suggest_conversation = ConversationHandler(
@@ -712,21 +543,13 @@ def main():
         states={
             WAITING_FOR_APP_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_app_name), CommandHandler("cancel", cancel)],
             WAITING_FOR_ANDROID_VERSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_android_version), CommandHandler("cancel", cancel)],
-            WAITING_FOR_APP_FILE: [
-                MessageHandler(filters.Document.ALL, receive_app_file),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_app_file),
-                MessageHandler(filters.PHOTO, receive_app_file),
-                CommandHandler("cancel", cancel),
-            ],
+            WAITING_FOR_APP_FILE: [MessageHandler(filters.Document.ALL, receive_app_file), MessageHandler(filters.TEXT & ~filters.COMMAND, receive_app_file), MessageHandler(filters.PHOTO, receive_app_file), CommandHandler("cancel", cancel)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
-
     idea_conversation = ConversationHandler(
         entry_points=[CommandHandler("idea", idea_start)],
-        states={
-            WAITING_FOR_IDEA: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_idea), CommandHandler("cancel", cancel)],
-        },
+        states={WAITING_FOR_IDEA: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_idea), CommandHandler("cancel", cancel)]},
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
@@ -736,8 +559,12 @@ def main():
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(CommandHandler("approve", approve_command))
     application.add_handler(CommandHandler("reject", reject_command))
+    application.add_handler(CommandHandler("myapps", myapps_command))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("catalog", catalog_command))
+    application.add_handler(CommandHandler("stats", stats_command))
 
-    print("🤖 OldDroidMarketBot запущен с правильными ссылками disk.hexed.pw!")
+    print("🤖 OldDroidMarketBot запущен!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
