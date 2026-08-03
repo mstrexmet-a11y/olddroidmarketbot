@@ -28,7 +28,9 @@ PORT = int(os.environ.get("PORT", 10000))
 WAITING_FOR_APP_NAME, WAITING_FOR_ANDROID_VERSION, WAITING_FOR_APP_FILE, WAITING_FOR_IDEA = range(4)
 
 SAVE_DIR = "suggested_apps"
+LINKS_DIR = "direct_links"
 os.makedirs(SAVE_DIR, exist_ok=True)
+os.makedirs(LINKS_DIR, exist_ok=True)
 
 MAX_FILE_SIZE = 20 * 1024 * 1024
 
@@ -60,6 +62,27 @@ def home():
 
 def run_web_server():
     app.run(host='0.0.0.0', port=PORT)
+
+# --- Прямые ссылки ---
+def save_direct_link(app_name, yadisk_url, suggestion_id):
+    """Создаёт TXT-файл с названием приложения и прямой ссылкой на скачивание."""
+    if not yadisk_url:
+        return None, None
+    
+    # Заменяем домен Яндекс.Диска на hexed.pw для прямого скачивания
+    direct_url = yadisk_url.replace("yadi.sk", "hexed.pw").replace("disk.yandex.ru", "hexed.pw")
+    
+    safe_name = app_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
+    filename = f"{suggestion_id}_{safe_name}.txt"
+    filepath = os.path.join(LINKS_DIR, filename)
+    
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(f"Название: {app_name}\n")
+        f.write(f"Прямая ссылка: {direct_url}\n")
+        f.write(f"Оригинальная ссылка: {yadisk_url}\n")
+    
+    logger.info(f"✅ Создан файл с прямой ссылкой: {filepath}")
+    return filepath, direct_url
 
 # --- Яндекс.Диск ---
 def upload_to_yandex_disk(local_path, filename):
@@ -236,12 +259,19 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "status": "pending"
             }
 
+            # Создаём TXT с прямой ссылкой
+            direct_link_path = None
+            direct_url = None
+            if yadisk_url:
+                direct_link_path, direct_url = save_direct_link(app_name, yadisk_url, suggestion_id)
+
             if yadisk_url:
                 await update.message.reply_text(
                     f"🎉 Отлично! Твоя заявка на *{app_name}* принята.\n\n"
                     f"📱 Мин. Android: *{android_version}*\n"
                     f"📦 Размер: *{size_mb} МБ*\n"
-                    f"☁️ [Ссылка на Яндекс.Диск]({yadisk_url})\n\n"
+                    f"☁️ [Ссылка на Яндекс.Диск]({yadisk_url})\n"
+                    f"📥 [Прямая ссылка]({direct_url})\n\n"
                     f"Модераторы OldDroidMarket проверят её в ближайшее время.\n\n"
                     f"{AD_TEXT}",
                     parse_mode="Markdown",
@@ -255,7 +285,7 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown"
                 )
 
-            await notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, local_path, yadisk_url, suggestion_id=suggestion_id)
+            await notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, local_path, yadisk_url, suggestion_id=suggestion_id, direct_url=direct_url)
 
         except Exception as e:
             logger.error(f"❌ Ошибка: {e}")
@@ -271,6 +301,8 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return WAITING_FOR_APP_FILE
 
         suggestion_id = f"{user_id}_{int(time.time())}"
+        direct_url = link.replace("yadi.sk", "hexed.pw").replace("disk.yandex.ru", "hexed.pw")
+        
         suggestions[suggestion_id] = {
             "user_id": user_id,
             "user_name": user_name,
@@ -280,20 +312,25 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "size_mb": None,
             "file_path": link,
             "yadisk_url": link,
+            "direct_url": direct_url,
             "is_link": True,
             "status": "pending"
         }
+        
+        # Создаём TXT с прямой ссылкой
+        save_direct_link(app_name, link, suggestion_id)
 
         await update.message.reply_text(
             f"🎉 Отлично! Твоя заявка на *{app_name}* принята.\n\n"
             f"📱 Мин. Android: *{android_version}*\n"
-            f"📎 Ссылка: {link}\n\n"
+            f"📎 Ссылка: {link}\n"
+            f"📥 Прямая ссылка: {direct_url}\n\n"
             f"Модераторы OldDroidMarket проверят её в ближайшее время.\n\n"
             f"{AD_TEXT}",
             parse_mode="Markdown",
             disable_web_page_preview=True
         )
-        await notify_admins(context, user_name, username, app_name, android_version, None, user_id, link, is_link=True, suggestion_id=suggestion_id)
+        await notify_admins(context, user_name, username, app_name, android_version, None, user_id, link, is_link=True, suggestion_id=suggestion_id, direct_url=direct_url)
 
     elif update.message.photo:
         await update.message.reply_text("❌ Это фото. Отправь APK-файл или ссылку. /cancel для отмены.")
@@ -348,12 +385,15 @@ async def receive_idea(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-async def notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, file_or_link, yadisk_url=None, is_link=False, suggestion_id=None):
+async def notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, file_or_link, yadisk_url=None, is_link=False, suggestion_id=None, direct_url=None):
     if is_link:
         text = f"📦 Новая заявка!\n\n👤 От: {user_name}"
         if username:
             text += f" (@{username})"
-        text += f"\n📱 Приложение: {app_name}\n📱 Мин. Android: {android_version}\n📎 Ссылка: {file_or_link}\n🆔 ID: {suggestion_id}\n📌 Статус: ⏳ На рассмотрении"
+        text += f"\n📱 Приложение: {app_name}\n📱 Мин. Android: {android_version}\n📎 Ссылка: {file_or_link}"
+        if direct_url:
+            text += f"\n📥 Прямая ссылка: {direct_url}"
+        text += f"\n🆔 ID: {suggestion_id}\n📌 Статус: ⏳ На рассмотрении"
     else:
         text = f"📦 Новая заявка!\n\n👤 От: {user_name}"
         if username:
@@ -361,6 +401,8 @@ async def notify_admins(context, user_name, username, app_name, android_version,
         text += f"\n📱 Приложение: {app_name}\n📱 Мин. Android: {android_version}\n📦 Размер: {size_mb} МБ\n🆔 ID: {suggestion_id}\n📌 Статус: ⏳ На рассмотрении"
         if yadisk_url:
             text += f"\n☁️ Яндекс.Диск: {yadisk_url}"
+        if direct_url:
+            text += f"\n📥 Прямая ссылка: {direct_url}"
 
     keyboard = InlineKeyboardMarkup([
         [
@@ -683,7 +725,7 @@ def main():
     application.add_handler(CommandHandler("approve", approve_command))
     application.add_handler(CommandHandler("reject", reject_command))
 
-    print("🤖 OldDroidMarketBot запущен с исправленными ID и уведомлениями!")
+    print("🤖 OldDroidMarketBot запущен с прямыми ссылками и TXT-файлами!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
