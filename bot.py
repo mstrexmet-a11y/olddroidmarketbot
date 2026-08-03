@@ -255,7 +255,7 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown"
                 )
 
-            await notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, local_path, yadisk_url, suggestion_id)
+            await notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, local_path, yadisk_url, suggestion_id=suggestion_id)
 
         except Exception as e:
             logger.error(f"❌ Ошибка: {e}")
@@ -371,12 +371,14 @@ async def notify_admins(context, user_name, username, app_name, android_version,
 
     for admin_id in ADMIN_IDS:
         try:
+            await context.bot.send_message(chat_id=admin_id, text=text, disable_web_page_preview=True, reply_markup=keyboard)
+            
             if not is_link and file_or_link and os.path.exists(file_or_link):
-                await context.bot.send_message(chat_id=admin_id, text=text, disable_web_page_preview=True, reply_markup=keyboard)
                 with open(file_or_link, "rb") as f:
                     await context.bot.send_document(chat_id=admin_id, document=f, filename=os.path.basename(file_or_link))
-            else:
-                await context.bot.send_message(chat_id=admin_id, text=text, disable_web_page_preview=True, reply_markup=keyboard)
+            elif is_link and file_or_link:
+                await context.bot.send_message(chat_id=admin_id, text=f"📎 Файл по ссылке: {file_or_link}", disable_web_page_preview=True)
+                
         except TelegramError as te:
             logger.error(f"❌ Ошибка отправки админу {admin_id}: {te}")
 
@@ -399,21 +401,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         action = "accept" if data.startswith("accept_idea_") else "reject"
         idea_id = data.replace(f"{action}_idea_", "")
         
-        # Проверяем, не обработана ли уже идея
         if idea_id in processed_ideas:
             who = processed_ideas[idea_id]["admin_name"]
             what = "принята" if processed_ideas[idea_id]["action"] == "accept" else "отклонена"
             await query.answer(f"⚠️ Эта идея уже {what} админом {who}!", show_alert=True)
             return
         
-        # Сохраняем обработку
         processed_ideas[idea_id] = {
             "action": action,
             "admin_name": admin_name,
             "admin_id": admin_id
         }
         
-        # Извлекаем user_id из idea_id (формат: idea_USERID_TIME)
         parts = idea_id.replace("idea_", "").split("_")
         user_id = parts[0]
         
@@ -422,7 +421,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await query.edit_message_text(text=new_text, reply_markup=None)
         
-        # Уведомляем автора идеи
         try:
             if action == "accept":
                 await context.bot.send_message(
@@ -443,7 +441,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
         
-        # Уведомляем второго админа
         for other_admin_id in ADMIN_IDS:
             if other_admin_id != admin_id:
                 try:
@@ -686,7 +683,7 @@ def main():
     application.add_handler(CommandHandler("approve", approve_command))
     application.add_handler(CommandHandler("reject", reject_command))
 
-    print("🤖 OldDroidMarketBot запущен с исправленными идеями и заявками!")
+    print("🤖 OldDroidMarketBot запущен с исправленными ID и уведомлениями!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
