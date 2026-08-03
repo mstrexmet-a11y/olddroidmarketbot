@@ -69,7 +69,6 @@ def save_direct_link(app_name, yadisk_url, suggestion_id):
     if not yadisk_url:
         return None, None
     
-    # Заменяем домен Яндекс.Диска на hexed.pw для прямого скачивания
     direct_url = yadisk_url.replace("yadi.sk", "hexed.pw").replace("disk.yandex.ru", "hexed.pw")
     
     safe_name = app_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
@@ -285,7 +284,7 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown"
                 )
 
-            await notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, local_path, yadisk_url, suggestion_id=suggestion_id, direct_url=direct_url)
+            await notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, local_path, yadisk_url, suggestion_id=suggestion_id, direct_url=direct_url, direct_link_path=direct_link_path)
 
         except Exception as e:
             logger.error(f"❌ Ошибка: {e}")
@@ -318,7 +317,7 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         
         # Создаём TXT с прямой ссылкой
-        save_direct_link(app_name, link, suggestion_id)
+        direct_link_path, _ = save_direct_link(app_name, link, suggestion_id)
 
         await update.message.reply_text(
             f"🎉 Отлично! Твоя заявка на *{app_name}* принята.\n\n"
@@ -330,7 +329,7 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
             disable_web_page_preview=True
         )
-        await notify_admins(context, user_name, username, app_name, android_version, None, user_id, link, is_link=True, suggestion_id=suggestion_id, direct_url=direct_url)
+        await notify_admins(context, user_name, username, app_name, android_version, None, user_id, link, is_link=True, suggestion_id=suggestion_id, direct_url=direct_url, direct_link_path=direct_link_path)
 
     elif update.message.photo:
         await update.message.reply_text("❌ Это фото. Отправь APK-файл или ссылку. /cancel для отмены.")
@@ -385,7 +384,7 @@ async def receive_idea(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-async def notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, file_or_link, yadisk_url=None, is_link=False, suggestion_id=None, direct_url=None):
+async def notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, file_or_link, yadisk_url=None, is_link=False, suggestion_id=None, direct_url=None, direct_link_path=None):
     if is_link:
         text = f"📦 Новая заявка!\n\n👤 От: {user_name}"
         if username:
@@ -418,8 +417,11 @@ async def notify_admins(context, user_name, username, app_name, android_version,
             if not is_link and file_or_link and os.path.exists(file_or_link):
                 with open(file_or_link, "rb") as f:
                     await context.bot.send_document(chat_id=admin_id, document=f, filename=os.path.basename(file_or_link))
-            elif is_link and file_or_link:
-                await context.bot.send_message(chat_id=admin_id, text=f"📎 Файл по ссылке: {file_or_link}", disable_web_page_preview=True)
+            
+            # Отправляем TXT с прямой ссылкой
+            if direct_link_path and os.path.exists(direct_link_path):
+                with open(direct_link_path, "rb") as f:
+                    await context.bot.send_document(chat_id=admin_id, document=f, filename=os.path.basename(direct_link_path))
                 
         except TelegramError as te:
             logger.error(f"❌ Ошибка отправки админу {admin_id}: {te}")
@@ -725,7 +727,7 @@ def main():
     application.add_handler(CommandHandler("approve", approve_command))
     application.add_handler(CommandHandler("reject", reject_command))
 
-    print("🤖 OldDroidMarketBot запущен с прямыми ссылками и TXT-файлами!")
+    print("🤖 OldDroidMarketBot запущен с TXT-файлами для админов!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
