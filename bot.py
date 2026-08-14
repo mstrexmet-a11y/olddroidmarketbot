@@ -51,6 +51,7 @@ processed_suggestions = {}
 processed_ideas = {}
 user_apps = {}
 pending_reject = {}
+admin_messages = {}  # Для синхронизации кнопок между админами
 
 AD_TEXT = (
     "━━━━━━━━━━━━━━━\n"
@@ -181,27 +182,25 @@ def clean_old_suggestions():
         except:
             pass
     for sid in to_delete:
-        # Удаляем TXT-файл если есть
         for f in os.listdir(LINKS_DIR):
             if f.startswith(sid):
                 try:
                     os.remove(os.path.join(LINKS_DIR, f))
                 except:
                     pass
-        # Удаляем APK если есть
         if sid in suggestions and suggestions[sid].get("file_path"):
             try:
                 os.remove(suggestions[sid]["file_path"])
             except:
                 pass
-        # Удаляем из user_apps
         uid = suggestions[sid].get("user_id")
         if uid and uid in user_apps and sid in user_apps[uid]:
             user_apps[uid].remove(sid)
-        # Удаляем заявку
         del suggestions[sid]
         if sid in processed_suggestions:
             del processed_suggestions[sid]
+        if sid in admin_messages:
+            del admin_messages[sid]
     if to_delete:
         logger.info(f"🗑 Удалено {len(to_delete)} старых заявок")
 
@@ -281,7 +280,6 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     app_name = context.user_data.get("suggested_name", "Без названия")
     android_version = context.user_data.get("android_version", "Не указана")
 
-    # Обработка файла
     if update.message.document:
         file = update.message.document
         file_name = file.file_name or ""
@@ -335,12 +333,10 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "date": datetime.now().strftime("%d.%m.%Y %H:%M")
             }
 
-            # Добавляем в список заявок пользователя
             if user_id not in user_apps:
                 user_apps[user_id] = []
             user_apps[user_id].append(suggestion_id)
 
-            # Создаём TXT с прямой ссылкой
             direct_link_path = None
             direct_url = None
             if yadisk_url:
@@ -374,7 +370,6 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"❌ Ошибка: {e}")
             await update.message.reply_text(f"❌ Произошла ошибка: {e}")
 
-    # Обработка ссылки
     elif update.message.text:
         link = update.message.text.strip()
         if not (link.startswith("http://") or link.startswith("https://")):
@@ -428,9 +423,7 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Отправь APK-файл или ссылку. /cancel для отмены.")
         return WAITING_FOR_APP_FILE
 
-    # Автоочистка старых заявок
     clean_old_suggestions()
-
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -484,7 +477,7 @@ async def receive_idea(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === УВЕДОМЛЕНИЯ АДМИНАМ ===
 
 async def notify_admins(context, user_name, username, app_name, android_version, size_mb, user_id, file_or_link, yadisk_url=None, is_link=False, suggestion_id=None, direct_url=None, direct_link_path=None):
-    """Отправляет уведомления всем админам с кнопками."""
+    """Отправляет уведомления всем админам с кнопками и сохраняет message_id."""
     if is_link:
         text = f"📦 Новая заявка!\n\n👤 От: {user_name}"
         if username:
@@ -510,9 +503,14 @@ async def notify_admins(context, user_name, username, app_name, android_version,
         ]
     ])
 
+    # Сохраняем текст для обновления
+    admin_messages[suggestion_id] = {}
+    suggestions[suggestion_id]["admin_text"] = text
+
     for admin_id in ADMIN_IDS:
         try:
-            await context.bot.send_message(chat_id=admin_id, text=text, disable_web_page_preview=True, reply_markup=keyboard)
+            msg = await context.bot.send_message(chat_id=admin_id, text=text, disable_web_page_preview=True, reply_markup=keyboard)
+            admin_messages[suggestion_id][admin_id] = msg.message_id
             
             if not is_link and file_or_link and os.path.exists(file_or_link):
                 with open(file_or_link, "rb") as f:
@@ -529,7 +527,7 @@ async def notify_admins(context, user_name, username, app_name, android_version,
 # === КНОПКИ ===
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает нажатия кнопок."""
+    """Обрабатывает нажатия кнопок и синхронизирует между админами."""
     query = update.callback_query
     await query.answer()
     
@@ -640,18 +638,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status_emoji = "✅ Одобрено" if action == "approve" else "❌ Отклонено"
             new_text = query.message.text.replace("⏳ На рассмотрении", f"{status_emoji} ({admin_name})")
             
+            # Обновляем у текущего админа
             await query.edit_message_text(text=new_text, reply_markup=None)
             
-            for other_admin_id in ADMIN_IDS:
-                if other_admin_id != admin_id:
-                    try:
-                        await context.bot.send_message(
-                            chat_id=other_admin_id,
-                            text=f"📢 Заявка на *{app_name}* (ID: {suggestion_id}) уже обработана!\n{status_emoji} админом {admin_name}",
-                            parse_mode="Markdown"
-                        )
-                    except:
-                        pass
+            # Обновляем у второго админа (СИНХРОНИЗАЦИЯ)
+            if suggestion_id in admin_messages:
+                for other_admin_id, msg_id in admin_messages[suggestion_id].items():
+                    if other_admin_id != admin_id:
+                        try:
+                            await context.bot.edit_message_text(
+                                chat_id=other_admin_id,
+                                message_id=msg_id,
+                                text=new_text,
+                                reply_markup=None
+                            )
+                        except:
+                            pass
 
 
 # === КОМАНДЫ МОДЕРАЦИИ ===
@@ -713,6 +715,16 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(f"✅ Заявка на *{app_name}* (ID: {suggestion_id}) одобрена!", parse_mode="Markdown")
     
+    # Синхронизация кнопок
+    if suggestion_id in admin_messages:
+        for aid, msg_id in admin_messages[suggestion_id].items():
+            try:
+                old_text = suggestions[suggestion_id].get("admin_text", "")
+                new_text = old_text.replace("⏳ На рассмотрении", f"✅ Одобрено ({admin_name})")
+                await context.bot.edit_message_text(chat_id=aid, message_id=msg_id, text=new_text, reply_markup=None)
+            except:
+                pass
+    
     for other_id in ADMIN_IDS:
         if other_id != admin_id:
             try:
@@ -726,7 +738,7 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /reject в ответ на заявку. Можно указать причину: /reject Причина"""
+    """Команда /reject в ответ на заявку. Можно указать причину."""
     admin_id = update.message.from_user.id
     admin_name = update.message.from_user.full_name
     
@@ -759,7 +771,6 @@ async def reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Заявка не найдена.")
         return
     
-    # Получаем причину (текст после /reject)
     reason = "Не указана"
     if update.message.text:
         parts = update.message.text.strip().split(maxsplit=1)
@@ -791,6 +802,16 @@ async def reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(f"❌ Заявка на *{app_name}* (ID: {suggestion_id}) отклонена.\nПричина: {reason}", parse_mode="Markdown")
     
+    # Синхронизация кнопок
+    if suggestion_id in admin_messages:
+        for aid, msg_id in admin_messages[suggestion_id].items():
+            try:
+                old_text = suggestions[suggestion_id].get("admin_text", "")
+                new_text = old_text.replace("⏳ На рассмотрении", f"❌ Отклонено ({admin_name})")
+                await context.bot.edit_message_text(chat_id=aid, message_id=msg_id, text=new_text, reply_markup=None)
+            except:
+                pass
+    
     for other_id in ADMIN_IDS:
         if other_id != admin_id:
             try:
@@ -814,7 +835,7 @@ async def myapps_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     text = "📋 **Ваши заявки:**\n\n"
-    for sid in user_apps[user_id][-10:]:  # Последние 10
+    for sid in user_apps[user_id][-10:]:
         if sid in suggestions:
             s = suggestions[sid]
             status_map = {
@@ -907,12 +928,9 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text += f"✅ Одобрено: {approved}\n"
     text += f"❌ Отклонено: {rejected}\n"
     text += f"💡 Идей обработано: {ideas}\n"
-    text += f"👥 Пользователей: {users}\n"
-    text += f"━━━━━━━━━━━━━━━\n"
-    text += f"📁 Файлов на Яндекс.Диске: {YANDEX_FOLDER}/\n"
-    text += f"📄 TXT-файлов с ссылками: {len(os.listdir(LINKS_DIR)) if os.path.exists(LINKS_DIR) else 0}"
+    text += f"👥 Пользователей: {users}"
     
-    await update.message.reply_text(text)
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -939,7 +957,6 @@ async def broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if admin_id not in ADMIN_IDS:
         return ConversationHandler.END
     
-    # Собираем всех уникальных пользователей
     all_users = set()
     for sid, s in suggestions.items():
         all_users.add(s["user_id"])
@@ -979,14 +996,12 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === ЗАПУСК ===
 
 def main():
-    # Веб-сервер для Render
     web_thread = Thread(target=run_web_server)
     web_thread.daemon = True
     web_thread.start()
     
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Конверсейшен для предложки
     suggest_conversation = ConversationHandler(
         entry_points=[CommandHandler("suggest", suggest_start)],
         states={
@@ -1008,7 +1023,6 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
-    # Конверсейшен для идей
     idea_conversation = ConversationHandler(
         entry_points=[CommandHandler("idea", idea_start)],
         states={
@@ -1020,7 +1034,6 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
-    # Конверсейшен для рассылки
     broadcast_conversation = ConversationHandler(
         entry_points=[CommandHandler("broadcast", broadcast_start)],
         states={
@@ -1032,7 +1045,6 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
-    # Регистрируем все обработчики
     application.add_handler(broadcast_conversation)
     application.add_handler(idea_conversation)
     application.add_handler(CommandHandler("start", start))
