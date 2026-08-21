@@ -4,7 +4,7 @@ import re
 import time
 import requests
 from threading import Thread
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -51,12 +51,12 @@ processed_suggestions = {}
 processed_ideas = {}
 user_apps = {}
 pending_reject = {}
-admin_messages = {}  # Для синхронизации кнопок между админами
+admin_messages = {}
 
 AD_TEXT = (
     "━━━━━━━━━━━━━━━\n"
     "♟️ **CheckersNote** — шахматы и шашки в ретро-стиле!\n"
-    "📱 Для Android 2.3\n"
+    "📱 Для Android 4.4.2\n"
     "🤖 Игра против ИИ или вдвоём\n"
     "🎨 Классический дизайн\n"
     "📦 Уже доступно в OldDroidMarket!\n"
@@ -503,7 +503,6 @@ async def notify_admins(context, user_name, username, app_name, android_version,
         ]
     ])
 
-    # Сохраняем текст для обновления
     admin_messages[suggestion_id] = {}
     suggestions[suggestion_id]["admin_text"] = text
 
@@ -540,7 +539,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     data = query.data
     
-    # Обработка идей
     if data.startswith("accept_idea_") or data.startswith("reject_idea_"):
         action = "accept" if data.startswith("accept_idea_") else "reject"
         idea_id = data.replace(f"{action}_idea_", "")
@@ -599,7 +597,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer(f"✅ Идея {idea_status.lower()}!")
         return
     
-    # Обработка заявок
     if data.startswith("approve_") or data.startswith("reject_"):
         action = "approve" if data.startswith("approve_") else "reject"
         suggestion_id = data.replace(f"{action}_", "")
@@ -638,10 +635,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status_emoji = "✅ Одобрено" if action == "approve" else "❌ Отклонено"
             new_text = query.message.text.replace("⏳ На рассмотрении", f"{status_emoji} ({admin_name})")
             
-            # Обновляем у текущего админа
             await query.edit_message_text(text=new_text, reply_markup=None)
             
-            # Обновляем у второго админа (СИНХРОНИЗАЦИЯ)
             if suggestion_id in admin_messages:
                 for other_admin_id, msg_id in admin_messages[suggestion_id].items():
                     if other_admin_id != admin_id:
@@ -715,7 +710,6 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(f"✅ Заявка на *{app_name}* (ID: {suggestion_id}) одобрена!", parse_mode="Markdown")
     
-    # Синхронизация кнопок
     if suggestion_id in admin_messages:
         for aid, msg_id in admin_messages[suggestion_id].items():
             try:
@@ -802,7 +796,6 @@ async def reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(f"❌ Заявка на *{app_name}* (ID: {suggestion_id}) отклонена.\nПричина: {reason}", parse_mode="Markdown")
     
-    # Синхронизация кнопок
     if suggestion_id in admin_messages:
         for aid, msg_id in admin_messages[suggestion_id].items():
             try:
