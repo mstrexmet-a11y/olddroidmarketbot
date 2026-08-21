@@ -1000,7 +1000,7 @@ def main():
     web_thread.daemon = True
     web_thread.start()
     
-    application = Application.builder().token(BOT_TOKEN).build()
+application = Application.builder().token(BOT_TOKEN).proxy_url("http://149.154.167.50:443").build()
 
     suggest_conversation = ConversationHandler(
         entry_points=[CommandHandler("suggest", suggest_start)],
