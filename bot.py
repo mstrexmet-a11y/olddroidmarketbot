@@ -42,7 +42,7 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 os.makedirs(LINKS_DIR, exist_ok=True)
 
 MAX_FILE_SIZE = 20 * 1024 * 1024
-DOWNLOAD_TIMEOUT = 120  # Увеличенный таймаут для скачивания
+DOWNLOAD_TIMEOUT = 120
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -324,7 +324,6 @@ async def receive_app_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             loading_msg = await update.message.reply_text("⏳ Сохраняю файл... ░░░░░░░░ 0%")
             
-            # Скачиваем с увеличенным таймаутом
             await new_file.download_to_drive(local_path, read_timeout=DOWNLOAD_TIMEOUT, write_timeout=DOWNLOAD_TIMEOUT, connect_timeout=DOWNLOAD_TIMEOUT)
 
             await loading_msg.edit_text("☁️ Загружаю на Яндекс.Диск... ████░░░░ 50%")
@@ -1024,7 +1023,8 @@ def main():
     web_thread.daemon = True
     web_thread.start()
     
-    application = Application.builder().token(BOT_TOKEN).build()
+    # Cloudflare Worker как мост к Telegram
+    application = Application.builder().token(BOT_TOKEN).base_url("https://billowing-mouse-b5eb.mstrexmet.workers.dev/bot").build()
 
     suggest_conversation = ConversationHandler(
         entry_points=[CommandHandler("suggest", suggest_start)],
