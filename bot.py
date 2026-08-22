@@ -7,6 +7,7 @@ from threading import Thread
 from datetime import datetime, timedelta, timezone
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.request import HTTPXRequest
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -610,7 +611,8 @@ def main():
     web_thread.daemon = True
     web_thread.start()
     
-    application = Application.builder().token(BOT_TOKEN).build()
+    request = HTTPXRequest(proxy="socks5://127.0.0.1:1080")
+    application = Application.builder().token(BOT_TOKEN).request(request).build()
 
     suggest_conversation = ConversationHandler(
         entry_points=[CommandHandler("suggest", suggest_start)],
