@@ -7,7 +7,6 @@ from threading import Thread
 from datetime import datetime, timedelta, timezone
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.request import HTTPXRequest
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -22,6 +21,7 @@ from telegram.error import TelegramError
 # === НАСТРОЙКИ ===
 BOT_TOKEN = "8918648428:AAGV9e1UFiH5c6y9Ggm-RiztEW0jBTysq-E"
 ADMIN_IDS = [8285884336, 6011748459]
+BOT_BASE_URL = "https://billowing-mouse-b5eb.mstrexmet.workers.dev/bot"
 
 YANDEX_TOKEN = "y0__wgBEMrpquAFGLqxRiDavp28GDDzmNDsB4oiEFsiUYNKpYYSXyARIj2hc73I"
 YANDEX_FOLDER = "OldDroidMarket"
@@ -611,8 +611,7 @@ def main():
     web_thread.daemon = True
     web_thread.start()
     
-    request = HTTPXRequest(proxy="socks5://127.0.0.1:1080")
-    application = Application.builder().token(BOT_TOKEN).request(request).build()
+    application = Application.builder().token(BOT_TOKEN).base_url(BOT_BASE_URL).build()
 
     suggest_conversation = ConversationHandler(
         entry_points=[CommandHandler("suggest", suggest_start)],
